@@ -1761,10 +1761,14 @@
   }
 
   function dispatchBlocksHtml(){
-    const RL = { 1:"Worked", 0:"Not worked", 2:"Never claimed" }, RC = { 1:"var(--status-talked)", 0:"var(--status-notinterested)", 2:"#8a8371" };
+    const RL = { 1:"Worked", 0:"Not worked", 2:"Never claimed", 3:"Open, needs a PM", 4:"Booked", 5:"Not marked yet" };
+    const RC = { 1:"var(--status-talked)", 0:"var(--status-notinterested)", 2:"#8a8371", 3:"var(--status-nothome)", 4:"var(--status-callback)", 5:"#8a8371" };
     const rows = blocks.slice().sort((a, b) => a.block_date < b.block_date ? 1 : a.block_date > b.block_date ? -1 : 0);
     if(!rows.length) return '<div class="empty-state">No knock blocks loaded yet.</div>';
-    return '<div class="le-meta" style="margin:4px 0 10px">From the Mothership Roofing calendar · last block ' + fmtDate(rows[0].block_date) + '. PMs book blocks on the calendar; this list never changes it.</div>' +
+    const today = new Date().toISOString().slice(0, 10);
+    const openSoon = rows.filter(b => b.result === 3 && b.block_date >= today).length;
+    return '<div class="le-meta" style="margin:4px 0 10px">Copied from the Mothership Roofing calendar every night. PMs book blocks on the calendar; this list never changes it.' +
+      (openSoon ? ' <b style="color:var(--status-nothome)">' + openSoon + ' upcoming block' + (openSoon === 1 ? '' : 's') + ' still need a PM.</b>' : '') + '</div>' +
       '<div class="table-scroll"><table class="log-table"><thead><tr><th>Date</th><th>Window</th><th>Knocker</th><th>PM</th><th>Where</th><th>Result</th><th>Note</th></tr></thead><tbody>' +
       rows.map(b => '<tr><td>' + escapeHtml(b.dow) + ' ' + fmtDate(b.block_date) + '</td><td>' + escapeHtml(b.window_text) + '</td><td>' + escapeHtml(b.generator) + '</td><td>' + escapeHtml(b.pm || "—") + '</td><td>' +
         (b.neighborhood_id && nbById[b.neighborhood_id] ? escapeHtml(nbById[b.neighborhood_id].name) + ' · ' : '') + escapeHtml(b.place || "—") + '</td><td style="color:' + RC[b.result] + ';font-weight:600">' + RL[b.result] + '</td><td>' + escapeHtml(b.note) + '</td></tr>').join("") +
