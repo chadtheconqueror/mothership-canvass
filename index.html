@@ -345,6 +345,52 @@
     .list-controls select{ flex:1; }
   }
 
+  /* ---------- Dispatch / My Streets ---------- */
+  #mineView, #dispatchView{ flex:1; overflow-y:auto; padding:18px 22px; display:none; }
+  #mineView.open, #dispatchView.open{ display:block; }
+  .view-h{ font-family:var(--font-display); font-size:20px; margin:0 0 12px; }
+  .sub-tabs{ display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  .sub-tab{ background:#fff; border:1px solid var(--line); padding:8px 14px; font-family:var(--font-mono); font-size:11.5px; letter-spacing:.05em; text-transform:uppercase; cursor:pointer; color:var(--olive); }
+  .sub-tab.active{ background:var(--olive); color:var(--paper); border-color:var(--olive); }
+  .import-btn{ margin:0 0 0 auto; display:inline-block; background:var(--brass); color:#fff; padding:8px 14px; font-family:var(--font-mono); font-size:11.5px; letter-spacing:.05em; text-transform:uppercase; cursor:pointer; }
+  .dispatch-grid{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.35fr); gap:16px; align-items:start; }
+  @media (max-width:900px){ .dispatch-grid{ grid-template-columns:1fr; } }
+  .nb-list{ display:flex; flex-direction:column; max-height:calc(100vh - 240px); overflow:auto; }
+  .nb-card{ display:grid; grid-template-columns:7px minmax(0,1fr) auto; gap:10px; align-items:center; text-align:left; background:#fff; border:1px solid var(--line); padding:9px 10px; cursor:pointer; font:inherit; color:inherit; width:100%; margin-bottom:6px; }
+  .nb-card.sel{ border-color:var(--ink); box-shadow:inset 0 0 0 1px var(--ink); }
+  .nb-bar{ width:7px; align-self:stretch; border-radius:3px; }
+  .nb-main{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .nb-right{ display:flex; flex-direction:column; align-items:flex-end; gap:3px; }
+  .nb-chips{ display:flex; flex-wrap:wrap; gap:4px; margin-top:3px; }
+  .chip{ font-size:11px; background:var(--paper-dim); padding:1px 7px; border-radius:10px; }
+  .nb-detail{ background:#fff; border:1px solid var(--line); padding:14px 16px; min-width:0; }
+  .mine-detail{ margin-top:10px; }
+  .nb-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+  .nb-head h2{ font-family:var(--font-display); font-size:22px; margin:0; }
+  .nb-head a{ text-decoration:none; }
+  .stats-cards.mini{ margin:12px 0; }
+  .stats-cards.mini .num{ font-size:22px; }
+  .assign-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:520px){ .assign-grid{ grid-template-columns:1fr; } }
+  .toggle-row{ display:flex; flex-wrap:wrap; gap:6px; }
+  .toggle{ font:inherit; font-size:13px; padding:7px 11px; border:1.5px solid var(--line); background:#fff; cursor:pointer; border-radius:2px; }
+  .toggle.on{ background:var(--olive); color:var(--paper); border-color:var(--olive); }
+  .streets-h{ font-family:var(--font-display); font-size:16px; margin:16px 0 6px; }
+  .table-scroll{ overflow:auto; max-height:520px; border:1px solid var(--line); }
+  .street-row{ cursor:pointer; }
+  .street-row select{ padding:5px; font-size:13px; width:auto; }
+  .hail-pill{ display:inline-block; min-width:42px; text-align:center; color:#fff; font-family:var(--font-mono); font-size:11.5px; padding:1px 4px; border-radius:2px; }
+  .homes-row td{ background:var(--paper); padding:6px 8px; }
+  .homes-table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+  .homes-table th{ text-align:left; font-family:var(--font-mono); font-size:10px; color:var(--olive); padding:4px 6px; text-transform:uppercase; }
+  .homes-table td{ padding:4px 6px; border-top:1px solid var(--paper-dim); }
+  .crew-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+  .crew-card{ margin-bottom:0; }
+  .crew-stats{ display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; }
+  .crew-stats div{ display:flex; flex-direction:column; }
+  .crew-stats b{ font-family:var(--font-display); font-size:20px; }
+  .crew-stats span{ font-family:var(--font-mono); font-size:10px; text-transform:uppercase; color:var(--olive); }
+
   /* ---------- Toast notifications (replaces native alert/confirm, which the sandbox may block) ---------- */
   #toastContainer{
     position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:1200;
@@ -425,6 +471,8 @@
     <button class="tab-btn active" data-tab="map">Map</button>
     <button class="tab-btn" data-tab="list">Call Log</button>
     <button class="tab-btn" data-tab="stats">Stats</button>
+    <button class="tab-btn" data-tab="mine">My Streets</button>
+    <button class="tab-btn" data-tab="dispatch" id="dispatchTabBtn" style="display:none">Dispatch</button>
     <button class="tab-btn" data-tab="team">Team</button>
   </div>
 
@@ -476,6 +524,9 @@
         <div id="statusChart"></div>
       </div>
     </div>
+
+    <div id="mineView"></div>
+    <div id="dispatchView"></div>
 
     <div id="teamView">
       <div class="team-card">
@@ -662,6 +713,7 @@
     if($("sidePanel").classList.contains("open") || $("newPinModal").classList.contains("open")) return;
     await loadPins();
     redrawAllMarkers();
+    await loadDispatch();
   }
 
   // ---------- Sign in ----------
@@ -709,6 +761,9 @@
     await loadPins();
     initApp();
     redrawAllMarkers();
+    await loadDispatch();
+    showDispatchTab();
+    document.querySelector('.tab-btn[data-tab="map"]').click();
   }
 
   $("loginBtn").addEventListener("click", async () => {
@@ -753,6 +808,7 @@
     await supabaseClient.auth.signOut();
     currentUser = null;
     me = null;
+    showDispatchTab();
     showLoginScreen();
     showSignInForm();
     showLoginError("");
@@ -769,9 +825,13 @@
       $("listView").classList.toggle("open", tab === "list");
       $("statsView").classList.toggle("open", tab === "stats");
       $("teamView").classList.toggle("open", tab === "team");
+      $("mineView").classList.toggle("open", tab === "mine");
+      $("dispatchView").classList.toggle("open", tab === "dispatch");
       if(tab === "list") renderList();
       if(tab === "stats") renderStats();
       if(tab === "team") renderTeam();
+      if(tab === "mine") renderMine();
+      if(tab === "dispatch") renderDispatch();
       if(tab === "map" && map) setTimeout(() => map.invalidateSize(), 50);
     });
   });
@@ -1461,6 +1521,335 @@
     }));
   }
   $("changeMyPassBtn").addEventListener("click", () => { showLoginScreen(); showLoginError(""); showChangePassForm(false); });
+
+  // ---------- Dispatch: hail neighborhoods, assignments, crew, knock blocks ----------
+  const PM_NAMES = ["Scottie","Chris Smith","Cory Anderson","Jesse Bryant","Michele","Mitch Ledford","Joey Gallitz","Mike Crespo","John Jenkins","Ian Haid","Evan"];
+  const NB_STATUS = { open:"Not started", assigned:"Assigned", working:"Being worked", done:"Worked out", hold:"Hold" };
+  const NB_STATUS_COLOR = { open:"#8a8371", assigned:"#2f6f8f", working:"#c98a2c", done:"#3f7d4f", hold:"#a13d31" };
+  let nbs = [], nbById = {}, streetsByNb = {}, streetById = {}, assignByNb = {}, streetAssign = {}, blocks = [], homesCache = {};
+  let dispatchSel = null, dispatchSub = "areas", openStreetId = null, mineSel = null, hailLayer = null;
+  let nbFilter = { q:"", status:"", knocker:"" };
+
+  function hailColor(h){ return h >= 1.25 ? "#9c1f3c" : h >= 1.0 ? "#d9562f" : h >= 0.9 ? "#ef9f4a" : "#d9b23f"; }
+  function fmtN(n){ return Number(n || 0).toLocaleString("en-US"); }
+  function fmtDate(d){ const p = String(d).split("-"); return p.length === 3 ? (+p[1]) + "/" + (+p[2]) : d; }
+  function shortDate(s){ const p = String(s).split("/"); return p.length === 3 ? p[0] + "/" + p[1] + "/" + p[2].slice(2) : s; }
+  function milesBetween(a, b, c, d){ const x = (d - b) * 69 * Math.cos(35 * Math.PI / 180), y = (c - a) * 69; return Math.sqrt(x * x + y * y); }
+  function uniq(a){ return a.filter((x, i) => a.indexOf(x) === i); }
+  function firstWord(s){ return String(s || "").split(" ")[0].toLowerCase(); }
+  function assignFor(id){ return assignByNb[id] || { neighborhood_id:id, status:"open", pm:"", knockers:[], notes:"" }; }
+  function crewPeople(){ return Object.values(profiles).filter(p => p.active).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email)); }
+  function showDispatchTab(){ $("dispatchTabBtn").style.display = isManager() ? "" : "none"; }
+  function normAddr(a){
+    return String(a || "").toLowerCase()
+      .replace(/\b(drive|dr)\b/g, "dr").replace(/\b(road|rd)\b/g, "rd").replace(/\b(lane|ln)\b/g, "ln").replace(/\b(court|ct)\b/g, "ct")
+      .replace(/\b(circle|cir|cr)\b/g, "cir").replace(/\b(street|st)\b/g, "st").replace(/\b(avenue|ave|av)\b/g, "ave").replace(/\b(place|pl)\b/g, "pl")
+      .replace(/\b(way|wy)\b/g, "way").replace(/\b(trail|trl)\b/g, "trl").replace(/\b(boulevard|blvd)\b/g, "blvd").replace(/\b(parkway|pkwy|py)\b/g, "pkwy")
+      .replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  async function loadDispatch(){
+    try{
+      const res = await Promise.all([
+        fetchAll("neighborhoods", "id,name,homes,storms,max_hail,center,lat,lng,cities", "id"),
+        fetchAll("streets", "id,neighborhood_id,name,city,zip,homes,max_hail", "id"),
+        fetchAll("assignments", "neighborhood_id,status,pm,knockers,notes,updated_at,updated_by", "neighborhood_id"),
+        fetchAll("street_assignments", "street_id,knocker", "street_id"),
+        fetchAll("knock_blocks", "id,block_date,dow,window_text,generator,pm,place,neighborhood_id,result,note", "block_date")
+      ]);
+      nbs = res[0].sort((x, y) => y.homes - x.homes);
+      nbById = {}; nbs.forEach(x => { nbById[x.id] = x; });
+      streetsByNb = {}; streetById = {};
+      res[1].forEach(x => { (streetsByNb[x.neighborhood_id] = streetsByNb[x.neighborhood_id] || []).push(x); streetById[x.id] = x; });
+      Object.values(streetsByNb).forEach(list => list.sort((p, q) => (q.max_hail || 0) - (p.max_hail || 0) || q.homes - p.homes));
+      assignByNb = {}; res[2].forEach(x => { x.knockers = x.knockers || []; assignByNb[x.neighborhood_id] = x; });
+      streetAssign = {}; res[3].forEach(x => { streetAssign[x.street_id] = x.knocker; });
+      blocks = res[4];
+    }catch(e){ dbError(e, "load the dispatch board"); }
+    drawHailAreas();
+  }
+
+  function drawHailAreas(){
+    if(!map) return;
+    if(hailLayer) map.removeLayer(hailLayer);
+    hailLayer = L.layerGroup();
+    nbs.forEach(n => {
+      if(n.lat == null || n.lng == null) return;
+      const col = hailColor(+n.max_hail || 0);
+      const r = Math.max(400, Math.min(3500, Math.sqrt(n.homes) * 45));
+      L.circle([n.lat, n.lng], { radius:r, color:col, weight:1.5, fillColor:col, fillOpacity:0.10, interactive:false }).addTo(hailLayer);
+      const dot = L.circleMarker([n.lat, n.lng], { radius:8, color:"#fff", weight:2, fillColor:col, fillOpacity:1, bubblingMouseEvents:false });
+      dot.bindPopup(() => nbPopupHtml(n));
+      dot.on("popupopen", ev => { const b = ev.popup.getElement().querySelector(".nb-open"); if(b) b.addEventListener("click", () => openNbInTab(n.id)); });
+      dot.addTo(hailLayer);
+    });
+    hailLayer.addTo(map);
+  }
+
+  function nbPopupHtml(n){
+    const a = assignFor(n.id);
+    const ks = a.knockers.map(id => nameFor(id)).join(", ");
+    return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
+      fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
+      '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
+      '<br><button class="nb-open save-btn" style="margin-top:8px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
+  }
+
+  function openNbInTab(id){
+    openStreetId = null;
+    if(isManager()){ dispatchSel = id; dispatchSub = "areas"; document.querySelector('.tab-btn[data-tab="dispatch"]').click(); }
+    else { mineSel = id; document.querySelector('.tab-btn[data-tab="mine"]').click(); }
+  }
+
+  function doorsNear(n){
+    let doors = 0, appts = 0;
+    Object.values(pins).forEach(p => {
+      if(n.lat == null || milesBetween(p.lat, p.lng, n.lat, n.lng) > 3) return;
+      doors++;
+      (p.logs || []).forEach(l => { if(l.status === "appointment") appts++; });
+    });
+    return { doors, appts };
+  }
+
+  function nbDetailHtml(n, editable){
+    const a = assignFor(n.id), near = doorsNear(n), people = crewPeople(), st = streetsByNb[n.id] || [];
+    let h = '<div class="nb-head"><h2>' + escapeHtml(n.name) + '</h2><a class="le-edit-btn" href="https://www.google.com/maps?q=' + n.lat + ',' + n.lng + '" target="_blank" rel="noopener">Directions to center →</a></div>' +
+      '<div class="le-meta">' + escapeHtml((n.cities || []).join(" · ")) + (n.center ? ' · drive to ' + escapeHtml(n.center) : '') + '</div>' +
+      '<div class="stats-cards mini"><div class="stat-card"><div class="num">' + fmtN(n.homes) + '</div><div class="lbl">Homes on list</div></div>' +
+      '<div class="stat-card"><div class="num">' + Number(n.max_hail).toFixed(2) + '"</div><div class="lbl">Biggest hail · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + '</div></div>' +
+      '<div class="stat-card"><div class="num">' + near.doors + '</div><div class="lbl">Doors knocked within 3 mi</div></div>' +
+      '<div class="stat-card highlight"><div class="num">' + near.appts + '</div><div class="lbl">Appointments nearby</div></div></div>';
+    if(editable){
+      h += '<div class="assign-grid"><div><label for="nbStatusSel">Status</label><select id="nbStatusSel">' + Object.keys(NB_STATUS).map(k => '<option value="' + k + '"' + (a.status === k ? ' selected' : '') + '>' + NB_STATUS[k] + '</option>').join("") + '</select></div>' +
+        '<div><label for="nbPmSel">PM who owns it</label><select id="nbPmSel"><option value="">No PM yet</option>' + PM_NAMES.map(p => '<option' + (a.pm === p ? ' selected' : '') + '>' + p + '</option>').join("") + '</select></div></div>' +
+        '<label>Knockers on the whole neighborhood</label><div class="toggle-row" id="nbKnockers">' + people.map(p => '<button type="button" class="toggle' + (a.knockers.indexOf(p.id) >= 0 ? ' on' : '') + '" data-id="' + p.id + '">' + escapeHtml(p.full_name || p.email) + '</button>').join("") + '</div>' +
+        '<label for="nbNotes">Dispatch notes</label><textarea id="nbNotes" placeholder="Where to start, gate codes, what the PM wants">' + escapeHtml(a.notes || "") + '</textarea>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px"><button class="save-btn" id="nbSaveNotes" style="width:auto;padding:9px 16px;margin-top:0">Save notes</button>' +
+        (a.updated_at ? '<span class="le-meta">Last change ' + new Date(a.updated_at).toLocaleString([], { month:"numeric", day:"numeric", hour:"numeric", minute:"2-digit" }) + (a.updated_by ? ' by ' + escapeHtml(nameFor(a.updated_by)) : '') + '</span>' : '') + '</div>';
+    } else {
+      h += '<div class="le-meta" style="margin:8px 0">' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + '</div>' +
+        (a.notes ? '<div class="le-notes" style="margin-bottom:8px"><b>Dispatch notes:</b> ' + escapeHtml(a.notes) + '</div>' : '');
+    }
+    h += '<h3 class="streets-h">Streets <span class="le-meta">worst hail first · tap a street for its homes</span></h3><div class="table-scroll"><table class="log-table"><thead><tr><th>Street</th><th>City</th><th>Homes</th><th>Hail</th><th>Knocker</th></tr></thead><tbody>' +
+      st.map(s => {
+        const who = streetAssign[s.id] || "";
+        let row = '<tr class="street-row" data-sid="' + s.id + '"><td>' + (openStreetId === s.id ? '▾ ' : '▸ ') + escapeHtml(s.name) + '</td><td>' + escapeHtml(s.city) + ' ' + escapeHtml(s.zip) + '</td><td>' + s.homes +
+          '</td><td><span class="hail-pill" style="background:' + hailColor(+s.max_hail) + '">' + Number(s.max_hail).toFixed(2) + '</span></td><td>' +
+          (editable ? '<select class="street-knocker" data-sid="' + s.id + '"><option value="">—</option>' + people.map(p => '<option value="' + p.id + '"' + (who === p.id ? ' selected' : '') + '>' + escapeHtml(p.full_name || p.email) + '</option>').join("") + '</select>'
+                    : escapeHtml(who ? nameFor(who) : "—")) + '</td></tr>';
+        if(openStreetId === s.id) row += '<tr class="homes-row"><td colspan="5" id="homes-' + s.id + '">Loading homes…</td></tr>';
+        return row;
+      }).join("") + '</tbody></table></div>';
+    return h;
+  }
+
+  function wireNbDetail(root, n, editable, rerender){
+    if(!root) return;
+    root.querySelectorAll(".street-row").forEach(tr => tr.addEventListener("click", e => {
+      if(e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
+      const sid = +tr.dataset.sid; openStreetId = openStreetId === sid ? null : sid; rerender();
+    }));
+    if(openStreetId && streetById[openStreetId] && streetById[openStreetId].neighborhood_id === n.id) loadHomes(openStreetId);
+    if(!editable) return;
+    $("nbStatusSel").addEventListener("change", e => saveAssign(n.id, { status: e.target.value }));
+    $("nbPmSel").addEventListener("change", e => saveAssign(n.id, { pm: e.target.value }));
+    $("nbKnockers").querySelectorAll(".toggle").forEach(b => b.addEventListener("click", () => {
+      const cur = assignFor(n.id).knockers.slice(), i = cur.indexOf(b.dataset.id);
+      if(i >= 0) cur.splice(i, 1); else cur.push(b.dataset.id);
+      const patch = { knockers: cur };
+      if(cur.length && assignFor(n.id).status === "open") patch.status = "assigned";
+      saveAssign(n.id, patch);
+    }));
+    $("nbSaveNotes").addEventListener("click", () => saveAssign(n.id, { notes: $("nbNotes").value }));
+    root.querySelectorAll(".street-knocker").forEach(sel => sel.addEventListener("change", () => saveStreet(n.id, +sel.dataset.sid, sel.value)));
+  }
+
+  async function loadHomes(sid){
+    if(!homesCache[sid]){
+      const r = await supabaseClient.from("homes").select("address,storm_dates,hail,built,roof_sq,owner").eq("street_id", sid).order("id");
+      if(r.error){ const c = $("homes-" + sid); if(c) c.textContent = "Couldn't load these homes."; return; }
+      homesCache[sid] = r.data;
+    }
+    const cell = $("homes-" + sid);
+    if(!cell) return;
+    const knocked = {};
+    Object.values(pins).forEach(p => { knocked[normAddr(p.address)] = p; });
+    cell.innerHTML = '<table class="homes-table"><thead><tr><th>Address</th><th>Hail</th><th>Built</th><th>Roof sq</th><th>Owner</th><th>Last knock</th></tr></thead><tbody>' +
+      homesCache[sid].map(hm => {
+        const p = knocked[normAddr(hm.address)], l = p && p.logs.length ? p.logs[p.logs.length - 1] : null, m = l && STATUS_META[l.status];
+        return '<tr><td>' + escapeHtml(hm.address) + '</td><td>' + (hm.hail != null ? Number(hm.hail).toFixed(2) : "") + '</td><td>' + escapeHtml(hm.built) + '</td><td>' + (hm.roof_sq || "") + '</td><td>' + escapeHtml(hm.owner) +
+          '</td><td>' + (l ? '<span class="dot" style="display:inline-block;vertical-align:-1px;background:' + (m ? m.hex : "#888") + '"></span> ' + (m ? m.label : escapeHtml(l.status)) + ' · ' + new Date(l.timestamp).toLocaleDateString([], { month:"numeric", day:"numeric" }) : '') + '</td></tr>';
+      }).join("") + '</tbody></table>';
+  }
+
+  async function saveAssign(id, patch){
+    const next = Object.assign({}, assignFor(id), patch, { neighborhood_id:id, updated_at:new Date().toISOString(), updated_by:me.id });
+    const r = await supabaseClient.from("assignments").upsert({ neighborhood_id:id, status:next.status, pm:next.pm, knockers:next.knockers, notes:next.notes, updated_at:next.updated_at, updated_by:next.updated_by }).select("neighborhood_id");
+    if(r.error){ dbError(r.error, "save this assignment"); return; }
+    if(!r.data || !r.data.length){ showToast("Only Chad, Luke and Chris can change assignments.", "error", 5000); return; }
+    assignByNb[id] = next;
+    showToast("Saved.", "success", 1500);
+    renderDispatch(); drawHailAreas();
+  }
+
+  async function saveStreet(nbId, sid, who){
+    const r = who
+      ? await supabaseClient.from("street_assignments").upsert({ street_id:sid, knocker:who, updated_at:new Date().toISOString(), updated_by:me.id }).select("street_id")
+      : await supabaseClient.from("street_assignments").delete().eq("street_id", sid).select("street_id");
+    if(r.error){ dbError(r.error, "save this street"); return; }
+    if(who) streetAssign[sid] = who; else delete streetAssign[sid];
+    if(who && assignFor(nbId).status === "open") await saveAssign(nbId, { status:"assigned" });
+    else { showToast("Saved.", "success", 1500); renderDispatch(); }
+  }
+
+  function dispatchAreasHtml(){
+    if(!nbs.length) return '<div class="empty-state">No hail neighborhoods loaded yet.' + (me.role === "admin" ? ' Use Import hail lists above.' : ' Ask Chad to import the hail lists.') + '</div>';
+    const people = crewPeople(), q = nbFilter.q.toLowerCase();
+    const list = nbs.filter(n => {
+      const a = assignFor(n.id), st = streetsByNb[n.id] || [];
+      if(nbFilter.status && a.status !== nbFilter.status) return false;
+      if(nbFilter.knocker && a.knockers.indexOf(nbFilter.knocker) < 0 && !st.some(s => streetAssign[s.id] === nbFilter.knocker)) return false;
+      if(q && n.name.toLowerCase().indexOf(q) < 0 && (n.cities || []).join(" ").toLowerCase().indexOf(q) < 0 && !st.some(s => s.name.toLowerCase().indexOf(q) >= 0)) return false;
+      return true;
+    });
+    let h = '<div class="list-controls"><input type="text" id="nbQ" placeholder="Search neighborhood, city, street" value="' + escapeHtml(nbFilter.q) + '">' +
+      '<select id="nbStatusF"><option value="">Any status</option>' + Object.keys(NB_STATUS).map(k => '<option value="' + k + '"' + (nbFilter.status === k ? ' selected' : '') + '>' + NB_STATUS[k] + '</option>').join("") + '</select>' +
+      '<select id="nbKnockerF"><option value="">Any knocker</option>' + people.map(p => '<option value="' + p.id + '"' + (nbFilter.knocker === p.id ? ' selected' : '') + '>' + escapeHtml(p.full_name || p.email) + '</option>').join("") + '</select>' +
+      '<span class="list-count">' + list.length + ' of ' + nbs.length + '</span></div>';
+    h += '<div class="dispatch-grid"><div class="nb-list">' + (list.length ? list.map(n => {
+      const a = assignFor(n.id);
+      const ks = uniq(a.knockers.concat((streetsByNb[n.id] || []).map(s => streetAssign[s.id]).filter(Boolean))).map(id => nameFor(id));
+      return '<button class="nb-card' + (dispatchSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
+        fmtN(n.homes) + ' homes · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + ' · up to ' + Number(n.max_hail).toFixed(2) + '"</span>' +
+        (ks.length ? '<span class="nb-chips">' + ks.map(k => '<span class="chip">' + escapeHtml(k) + '</span>').join("") + '</span>' : '') + '</span>' +
+        '<span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span>' + (a.pm ? '<span class="le-meta">PM ' + escapeHtml(a.pm) + '</span>' : '') + '</span></button>';
+    }).join("") : '<div class="empty-state">No neighborhoods match.</div>') + '</div><div class="nb-detail" id="nbDetail">' +
+      (dispatchSel && nbById[dispatchSel] ? nbDetailHtml(nbById[dispatchSel], true) : '<div class="empty-state" style="padding:30px 10px">Pick a neighborhood to assign it.</div>') + '</div></div>';
+    return h;
+  }
+
+  function wireDispatchAreas(){
+    const q = $("nbQ");
+    if(q) q.addEventListener("input", () => { nbFilter.q = q.value; const pos = q.selectionStart; renderDispatch(); const q2 = $("nbQ"); if(q2){ q2.focus(); q2.setSelectionRange(pos, pos); } });
+    const sf = $("nbStatusF"); if(sf) sf.addEventListener("change", () => { nbFilter.status = sf.value; renderDispatch(); });
+    const kf = $("nbKnockerF"); if(kf) kf.addEventListener("change", () => { nbFilter.knocker = kf.value; renderDispatch(); });
+    $("dispatchView").querySelectorAll(".nb-card").forEach(b => b.addEventListener("click", () => {
+      dispatchSel = b.dataset.id; openStreetId = null; renderDispatch();
+      const d = $("nbDetail"); if(d && window.innerWidth < 900) d.scrollIntoView({ behavior:"smooth", block:"start" });
+    }));
+    if(dispatchSel && nbById[dispatchSel]) wireNbDetail($("nbDetail"), nbById[dispatchSel], true, renderDispatch);
+  }
+
+  function dispatchCrewHtml(){
+    const stats = {};
+    Object.values(pins).forEach(p => (p.logs || []).forEach(l => {
+      const k = l.member_id || ("name:" + l.member);
+      const s = stats[k] = stats[k] || { visits:0, appts:0, days:{}, last:0 };
+      s.visits++; if(l.status === "appointment") s.appts++;
+      s.days[new Date(l.timestamp).toDateString()] = 1; if(l.timestamp > s.last) s.last = l.timestamp;
+    }));
+    return '<div class="crew-grid">' + crewPeople().map(p => {
+      const s = stats[p.id] || { visits:0, appts:0, days:{}, last:0 };
+      const mineN = nbs.filter(n => assignFor(n.id).knockers.indexOf(p.id) >= 0);
+      const mineS = Object.keys(streetAssign).filter(sid => streetAssign[sid] === p.id);
+      const bl = blocks.filter(b => firstWord(b.generator) === firstWord(p.full_name));
+      return '<div class="team-card crew-card"><h3>' + escapeHtml(p.full_name || p.email) + '</h3><div class="le-meta">' + (ROLE_LABEL[p.role] || p.role) + '</div>' +
+        '<div class="crew-stats"><div><b>' + s.visits + '</b><span>Visits</span></div><div><b>' + s.appts + '</b><span>Appts</span></div><div><b>' + Object.keys(s.days).length + '</b><span>Days out</span></div>' +
+        '<div><b>' + (s.last ? new Date(s.last).toLocaleDateString([], { month:"numeric", day:"numeric" }) : "—") + '</b><span>Last out</span></div><div><b>' + bl.filter(b => b.result === 1).length + '</b><span>Blocks worked</span></div></div>' +
+        '<div class="le-meta" style="margin-top:8px">Neighborhoods: ' + (mineN.length ? mineN.map(n => escapeHtml(n.name)).join(", ") : "none") + (mineS.length ? ' · ' + mineS.length + ' street' + (mineS.length === 1 ? '' : 's') + ' assigned' : '') + '</div></div>';
+    }).join("") + '</div>';
+  }
+
+  function dispatchBlocksHtml(){
+    const RL = { 1:"Worked", 0:"Not worked", 2:"Never claimed" }, RC = { 1:"var(--status-talked)", 0:"var(--status-notinterested)", 2:"#8a8371" };
+    const rows = blocks.slice().sort((a, b) => a.block_date < b.block_date ? 1 : a.block_date > b.block_date ? -1 : 0);
+    if(!rows.length) return '<div class="empty-state">No knock blocks loaded yet.</div>';
+    return '<div class="le-meta" style="margin:4px 0 10px">From the Mothership Roofing calendar · last block ' + fmtDate(rows[0].block_date) + '. PMs book blocks on the calendar; this list never changes it.</div>' +
+      '<div class="table-scroll"><table class="log-table"><thead><tr><th>Date</th><th>Window</th><th>Knocker</th><th>PM</th><th>Where</th><th>Result</th><th>Note</th></tr></thead><tbody>' +
+      rows.map(b => '<tr><td>' + escapeHtml(b.dow) + ' ' + fmtDate(b.block_date) + '</td><td>' + escapeHtml(b.window_text) + '</td><td>' + escapeHtml(b.generator) + '</td><td>' + escapeHtml(b.pm || "—") + '</td><td>' +
+        (b.neighborhood_id && nbById[b.neighborhood_id] ? escapeHtml(nbById[b.neighborhood_id].name) + ' · ' : '') + escapeHtml(b.place || "—") + '</td><td style="color:' + RC[b.result] + ';font-weight:600">' + RL[b.result] + '</td><td>' + escapeHtml(b.note) + '</td></tr>').join("") +
+      '</tbody></table></div>';
+  }
+
+  let importMsg = "";
+  function renderDispatch(){
+    const v = $("dispatchView");
+    if(!isManager()){ v.innerHTML = '<div class="empty-state">Only Chad, Luke and Chris can open Dispatch.</div>'; return; }
+    let h = '<div class="sub-tabs">' + [["areas","Neighborhoods"],["crew","Crew"],["blocks","Knock blocks"]].map(x => '<button class="sub-tab' + (dispatchSub === x[0] ? ' active' : '') + '" data-sub="' + x[0] + '">' + x[1] + '</button>').join("") +
+      (me.role === "admin" ? '<label class="import-btn">Import hail lists<input type="file" id="importFile" accept=".json,application/json" hidden></label>' : '') + '</div>' +
+      '<div id="importStatus" class="le-meta" style="margin-bottom:8px">' + escapeHtml(importMsg) + '</div>';
+    if(dispatchSub === "areas") h += dispatchAreasHtml();
+    if(dispatchSub === "crew") h += dispatchCrewHtml();
+    if(dispatchSub === "blocks") h += dispatchBlocksHtml();
+    v.innerHTML = h;
+    v.querySelectorAll(".sub-tab").forEach(b => b.addEventListener("click", () => { dispatchSub = b.dataset.sub; renderDispatch(); }));
+    const f = $("importFile"); if(f) f.addEventListener("change", () => { if(f.files && f.files[0]) importHailLists(f.files[0]); });
+    if(dispatchSub === "areas") wireDispatchAreas();
+  }
+
+  function renderMine(){
+    const v = $("mineView");
+    if(!me){ v.innerHTML = ""; return; }
+    const myNbs = nbs.filter(n => assignFor(n.id).knockers.indexOf(me.id) >= 0 || (streetsByNb[n.id] || []).some(s => streetAssign[s.id] === me.id));
+    let h = '<h2 class="view-h">My streets</h2>';
+    if(!myNbs.length) h += '<div class="empty-state" style="padding:24px 10px">Nothing is assigned to you yet. When Luke assigns you a neighborhood or streets, they show up here. You can also tap a hail area on the map.</div>';
+    h += myNbs.map(n => {
+      const a = assignFor(n.id), mine = (streetsByNb[n.id] || []).filter(s => streetAssign[s.id] === me.id);
+      return '<button class="nb-card' + (mineSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
+        (a.knockers.indexOf(me.id) >= 0 ? 'Whole neighborhood' : mine.length + ' street' + (mine.length === 1 ? '' : 's') + ': ' + mine.map(s => escapeHtml(s.name)).join(", ")) + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') +
+        '</span></span><span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span></span></button>';
+    }).join("");
+    if(mineSel && nbById[mineSel]) h += '<div class="nb-detail mine-detail" id="mineDetail">' + nbDetailHtml(nbById[mineSel], false) + '</div>';
+    v.innerHTML = h;
+    v.querySelectorAll(".nb-card").forEach(b => b.addEventListener("click", () => { mineSel = mineSel === b.dataset.id ? null : b.dataset.id; openStreetId = null; renderMine(); }));
+    if(mineSel && nbById[mineSel]) wireNbDetail($("mineDetail"), nbById[mineSel], false, renderMine);
+  }
+
+  async function importHailLists(file){
+    const say = t => { importMsg = t; const el = $("importStatus"); if(el) el.textContent = t; };
+    let doc;
+    try{ doc = JSON.parse(await file.text()); }catch(e){ showToast("That file isn't a hail list file.", "error"); return; }
+    if(!doc || doc.kind !== "mothership-hail-lists" || !Array.isArray(doc.areas)){ showToast("That file isn't a hail list file.", "error"); return; }
+    const f = $("importFile"); if(f) f.disabled = true;
+    const total = doc.areas.reduce((s, a) => s + a.homeRows.length, 0);
+    let done = 0;
+    try{
+      for(const a of doc.areas){
+        say("Loading " + a.name + "… " + fmtN(done) + " of " + fmtN(total) + " homes");
+        let r = await supabaseClient.from("neighborhoods").upsert({ id:a.id, name:a.name, homes:a.homes, storms:a.storms, max_hail:a.max, center:a.center, lat:a.lat, lng:a.lng, cities:a.cities, imported_at:new Date().toISOString() });
+        if(r.error) throw r.error;
+        r = await supabaseClient.from("streets").upsert(a.streets.map(s => ({ neighborhood_id:a.id, name:s[0], city:s[1], zip:s[2], homes:s[3], max_hail:s[4] })), { onConflict:"neighborhood_id,name,city,zip" }).select("id,name,city,zip");
+        if(r.error) throw r.error;
+        const idOf = {}; r.data.forEach(s => { idOf[s.name + "|" + s.city + "|" + s.zip] = s.id; });
+        const ids = a.streets.map(s => idOf[s[0] + "|" + s[1] + "|" + s[2]]);
+        for(let i = 0; i < ids.length; i += 150){
+          const d = await supabaseClient.from("homes").delete().in("street_id", ids.slice(i, i + 150));
+          if(d.error) throw d.error;
+        }
+        for(let i = 0; i < a.homeRows.length; i += 1000){
+          const chunk = a.homeRows.slice(i, i + 1000).map(x => ({ street_id:ids[x[0]], address:x[1], storm_dates:x[2] || "", hail:x[3], built:x[4] || "", roof_sq:x[5], owner:x[6] || "" }));
+          const ins = await supabaseClient.from("homes").insert(chunk);
+          if(ins.error) throw ins.error;
+          done += chunk.length;
+          say("Loading " + a.name + "… " + fmtN(done) + " of " + fmtN(total) + " homes");
+        }
+      }
+      if(Array.isArray(doc.blocks) && doc.blocks.length){
+        const b = await supabaseClient.from("knock_blocks").upsert(doc.blocks);
+        if(b.error) throw b.error;
+      }
+      homesCache = {};
+      await loadDispatch();
+      say("Loaded " + doc.areas.length + " neighborhoods and " + fmtN(total) + " homes" + (doc.blocks ? " plus " + doc.blocks.length + " knock blocks" : "") + ".");
+      showToast("Hail lists loaded.", "success", 4000);
+      renderDispatch();
+    }catch(e){
+      dbError(e, "finish the import");
+      say("The import stopped partway. Run it again with the same file; it picks up without making duplicates.");
+    }finally{
+      const f2 = $("importFile"); if(f2) f2.disabled = false;
+    }
+  }
 
   // ---------- Utils ----------
   function escapeHtml(str){
