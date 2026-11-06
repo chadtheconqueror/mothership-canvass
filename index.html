@@ -2091,50 +2091,14 @@
     homeLegend.addTo(map);
   }
 
+  // House dots are off (Chad, 11/6): the map shows only the shaded assigned streets plus the color key
   async function drawHomeLayer(){
     if(!map || !me) return;
-    if(map.getZoom() < 15){
-      if(homeLayer){ map.removeLayer(homeLayer); homeLayer = null; }
-      drawHomeLegend(null);
-      const c = map.getCenter();
-      const nearAny = nbs.some(n => n.lat != null && milesBetween(c.lat, c.lng, n.lat, n.lng) < 6);
-      setHomeHint(nearAny && map.getZoom() >= 12 ? "Zoom in to see every house and who has it" : "");
-      return;
-    }
-    if(homeBusy){ homePending = true; return; }
-    homeBusy = true;
-    try{
-      if(!homeRenderer) homeRenderer = L.canvas({ padding:0.5 });
-      const homes = await loadHomesInBounds(map.getBounds().pad(0.25));
-      const layer = L.layerGroup(), used = {};
-      homes.forEach(hm => {
-        const who = streetAssign[hm.street_id], s = streetById[hm.street_id];
-        const a = hm.neighborhood_id ? assignFor(hm.neighborhood_id) : null;
-        let color, fill, label;
-        if(who){ used[who] = 1; return; }
-        else if(a && a.knockers && a.knockers.length){ color = "#3b4a34"; fill = "#ffffff"; label = "Neighborhood crew: " + a.knockers.map(id => nameFor(id)).join(", "); used.__crew = 1; }
-        else { color = "#8a8371"; fill = "#ffffff"; label = "Open, nobody assigned"; used.__open = 1; }
-        const m = L.circleMarker([hm.lat, hm.lng], { renderer:homeRenderer, radius:6, color, weight:2, fillColor:fill, fillOpacity:0.9, bubblingMouseEvents:false });
-        m.bindTooltip(escapeHtml(hm.address) + '<br>' + escapeHtml(s ? s.name : "") + ' · ' + escapeHtml(label), { direction:"top" });
-        m.on("click", () => {
-          pendingLatLng = L.latLng(hm.lat, hm.lng);
-          openNewPinModal();
-          $("pinAddress").value = hm.address;
-          $("pinNotes").placeholder = (s ? s.name + " · " : "") + label;
-        });
-        m.addTo(layer);
-      });
-      if(homeLayer) map.removeLayer(homeLayer);
-      homeLayer = layer.addTo(map);
-      drawHomeLegend(homes.length ? used : null);
-      setHomeHint("");
-    }catch(e){
-      console.warn("home layer", e);
-      setHomeHint("Couldn't load the houses here. Move the map to try again.");
-    }finally{
-      homeBusy = false;
-      if(homePending){ homePending = false; drawHomeLayer(); }
-    }
+    if(homeLayer){ map.removeLayer(homeLayer); homeLayer = null; }
+    setHomeHint("");
+    const used = {};
+    Object.keys(streetAssign).forEach(sid => { if(streetAssign[sid]) used[streetAssign[sid]] = 1; });
+    drawHomeLegend(map.getZoom() >= 13 && Object.keys(used).length ? used : null);
   }
 
   async function locateHomes(){
