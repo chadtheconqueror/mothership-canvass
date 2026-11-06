@@ -2010,9 +2010,14 @@
     }
     return { segs, mid:ll(mid) };
   }
+  // Wide, see-through shading: about 36 px at street level, scaled with zoom so it covers the houses on both sides
+  let streetLines = [];
+  function streetLineWeight(){ return Math.max(8, Math.min(70, Math.round(36 * Math.pow(2, map.getZoom() - 16)))); }
   function updateStreetTagVisibility(){
     if(!map) return;
     map.getContainer().classList.toggle("hide-street-tags", map.getZoom() < 15);
+    const w = streetLineWeight();
+    streetLines.forEach(l => l.setStyle({ weight:w }));
   }
   async function drawStreetLines(){
     if(!map || !me) return;
@@ -2023,14 +2028,15 @@
       await loadStreetHomes(ids);
       if(!map.getPane("streetLines")) map.createPane("streetLines").style.zIndex = 350;
       const layer = L.layerGroup();
+      streetLines = [];
       ids.forEach(id => {
         const pts = streetGeo[id] || [];
         if(!pts.length) return;
         const who = streetAssign[id], color = knockerColor(who), s = streetById[id];
         const shape = streetSegments(pts);
         if(!shape.segs.length) return;
-        L.polyline(shape.segs, { pane:"streetLines", color:"#ffffff", weight:14, opacity:0.9, lineCap:"round", lineJoin:"round", interactive:false }).addTo(layer);
-        const line = L.polyline(shape.segs, { pane:"streetLines", color, weight:9, opacity:0.95, lineCap:"round", lineJoin:"round", interactive:false });
+        const line = L.polyline(shape.segs, { pane:"streetLines", color, weight:streetLineWeight(), opacity:0.2, lineCap:"round", lineJoin:"round", interactive:false });
+        streetLines.push(line);
         const who1 = String(nameFor(who)).split(" ")[0];
         line.addTo(layer);
         L.marker(shape.mid, { interactive:false, keyboard:false, icon:L.divIcon({ className:"street-tag-wrap", iconSize:null,
@@ -2105,7 +2111,7 @@
         const who = streetAssign[hm.street_id], s = streetById[hm.street_id];
         const a = hm.neighborhood_id ? assignFor(hm.neighborhood_id) : null;
         let color, fill, label;
-        if(who){ color = knockerColor(who); fill = color; label = nameFor(who); used[who] = 1; }
+        if(who){ used[who] = 1; return; }
         else if(a && a.knockers && a.knockers.length){ color = "#3b4a34"; fill = "#ffffff"; label = "Neighborhood crew: " + a.knockers.map(id => nameFor(id)).join(", "); used.__crew = 1; }
         else { color = "#8a8371"; fill = "#ffffff"; label = "Open, nobody assigned"; used.__open = 1; }
         const m = L.circleMarker([hm.lat, hm.lng], { renderer:homeRenderer, radius:6, color, weight:2, fillColor:fill, fillOpacity:0.9, bubblingMouseEvents:false });
