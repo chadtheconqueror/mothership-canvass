@@ -397,6 +397,29 @@
   .home-legend .dot{ width:10px; height:10px; border-radius:50%; border:2px solid transparent; flex-shrink:0; }
   .map-hint{ background:rgba(28,37,33,.85); color:var(--paper); font-family:var(--font-mono); font-size:11px; padding:5px 9px; border-radius:2px; }
 
+  /* ---------- Status filter + street lines ---------- */
+  #legend .lg-row{ cursor:pointer; user-select:none; padding:2px 4px; margin:1px -4px; border-radius:2px; }
+  #legend .lg-row:hover{ background:var(--paper-dim); }
+  #legend .lg-row.off{ opacity:.35; text-decoration:line-through; }
+  #legend .lg-n{ margin-left:auto; padding-left:8px; color:#8a8371; }
+  .lg-all{ font-family:var(--font-mono); font-size:10.5px; color:var(--olive); background:#fff; border:1px solid var(--line); padding:4px 8px; margin-top:6px; cursor:pointer; }
+  .lg-tip{ color:#8a8371; font-size:10px; margin-top:5px; line-height:1.35; }
+  #statusBar{ display:none; }
+  @media (max-width:720px){
+    #statusBar{ display:flex; position:absolute; left:10px; right:68px; bottom:16px; z-index:1001; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; padding:2px 2px 4px; }
+    #statusBar::-webkit-scrollbar{ display:none; }
+    #legendToggle{ display:none !important; }
+    #legend, #legend.open{ display:none; }
+  }
+  .st-chip{ flex-shrink:0; display:flex; align-items:center; gap:6px; min-height:42px; padding:0 13px; border-radius:21px; background:var(--paper); border:1.5px solid var(--line); box-shadow:0 2px 8px rgba(0,0,0,.22); font-family:var(--font-mono); font-size:12.5px; color:var(--ink); cursor:pointer; white-space:nowrap; }
+  .st-chip .dot{ width:12px; height:12px; }
+  .st-chip.off{ opacity:.5; background:var(--paper-dim); box-shadow:none; }
+  .st-chip.only{ border-color:var(--ink); font-weight:700; }
+  .st-chip.all{ background:var(--olive-dark); color:var(--paper); border-color:var(--olive-dark); }
+  .street-tag-wrap{ background:none; border:none; }
+  .street-tag{ display:inline-block; transform:translate(-50%,-50%); white-space:nowrap; background:rgba(255,255,255,.95); color:var(--ink); border-left:4px solid; box-shadow:0 1px 5px rgba(0,0,0,.35); font-family:var(--font-mono); font-size:11px; font-weight:700; padding:2px 6px; pointer-events:none; }
+  .hide-street-tags .street-tag{ display:none; }
+
   /* ---------- Toast notifications (replaces native alert/confirm, which the sandbox may block) ---------- */
   #toastContainer{
     position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:1200;
@@ -489,13 +512,11 @@
       <div id="mapSourceLabel"></div>
       <div id="legend">
         <div class="lg-title">Status</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-talked)"></span>Talked to homeowner</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-appointment)"></span>Appointment set</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-nothome)"></span>Not home</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-callback)"></span>Callback requested</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-notinterested)"></span>Not interested</div>
-        <div class="lg-row"><span class="dot" style="background:var(--status-sold)"></span>Sold / closed</div>
+        <div id="legendRows"></div>
+        <button type="button" class="lg-all" id="lgAll" style="display:none">Show all statuses</button>
+        <div class="lg-tip">Click a status to show only those houses. Click more to add them.</div>
       </div>
+      <div id="statusBar"></div>
       <button id="legendToggle" title="Show legend">🎨</button>
       <button id="locateBtn" title="Find my location">📍</button>
       <div id="sidePanel"></div>
@@ -713,6 +734,7 @@
     Object.keys(markers).forEach(id => { map.removeLayer(markers[id]); });
     markers = {};
     Object.keys(pins).forEach(id => addMarkerForPin(id));
+    renderStatusControls();
   }
 
   async function refreshData(){
@@ -975,6 +997,7 @@
     $("legendToggle").addEventListener("click", () => {
       $("legend").classList.toggle("open");
     });
+    wireStatusControls();
 
     // Start tracking automatically so the map centers on you and follows
     // your position as you walk your route. Silent — no alert if it fails on load.
@@ -1006,10 +1029,60 @@
     });
   }
 
+  // ---------- Status filter (legend on desktop, chip bar on phones) ----------
+  var statusShow = null;
+  const STATUS_SHORT = { talked:"Talked", appointment:"Appt", nothome:"Not home", callback:"Callback", notinterested:"Not interested", sold:"Sold" };
+  function statusSet(){
+    if(statusShow) return statusShow;
+    try{
+      const v = JSON.parse(localStorage.getItem("canvassStatusShow") || "null");
+      if(Array.isArray(v)){ const s = new Set(v.filter(k => STATUS_META[k])); if(s.size) return (statusShow = s); }
+    }catch(e){}
+    return (statusShow = new Set(Object.keys(STATUS_META)));
+  }
+  function allStatusesOn(){ const s = statusSet(); return Object.keys(STATUS_META).every(k => s.has(k)); }
+  function tapStatus(k){
+    const s = statusSet();
+    if(allStatusesOn()) statusShow = new Set([k]);
+    else if(s.has(k)){ s.delete(k); if(!s.size) statusShow = new Set(Object.keys(STATUS_META)); }
+    else s.add(k);
+    applyStatusFilter();
+  }
+  function showAllStatuses(){ statusShow = new Set(Object.keys(STATUS_META)); applyStatusFilter(); }
+  function applyStatusFilter(){
+    try{ localStorage.setItem("canvassStatusShow", JSON.stringify([...statusSet()])); }catch(e){}
+    redrawAllMarkers();
+  }
+  function renderStatusControls(){
+    const s = statusSet(), all = allStatusesOn(), counts = {};
+    Object.keys(STATUS_META).forEach(k => { counts[k] = 0; });
+    Object.values(pins).forEach(p => { const st = statusOfLatestLog(p); if(counts[st] != null) counts[st]++; });
+    const rows = $("legendRows");
+    if(rows) rows.innerHTML = Object.keys(STATUS_META).map(k =>
+      '<div class="lg-row' + (s.has(k) ? '' : ' off') + '" data-st="' + k + '"><span class="dot" style="background:' + STATUS_META[k].hex + '"></span>' + STATUS_META[k].label + '<span class="lg-n">' + counts[k] + '</span></div>').join("");
+    const lgAll = $("lgAll"); if(lgAll) lgAll.style.display = all ? "none" : "";
+    const bar = $("statusBar");
+    if(bar) bar.innerHTML = (all ? '' : '<button type="button" class="st-chip all" data-st="__all">Show all</button>') +
+      Object.keys(STATUS_META).map(k => '<button type="button" class="st-chip' + (s.has(k) ? (all ? '' : ' only') : ' off') + '" data-st="' + k + '"><span class="dot" style="background:' + STATUS_META[k].hex + '"></span>' + STATUS_SHORT[k] + ' ' + counts[k] + '</button>').join("");
+  }
+  function wireStatusControls(){
+    const handler = e => {
+      const el = e.target.closest("[data-st]");
+      if(!el) return;
+      e.preventDefault(); e.stopPropagation();
+      if(el.dataset.st === "__all") showAllStatuses(); else tapStatus(el.dataset.st);
+    };
+    const rows = $("legendRows"); if(rows) rows.addEventListener("click", handler);
+    const bar = $("statusBar"); if(bar) bar.addEventListener("click", handler);
+    const lgAll = $("lgAll"); if(lgAll) lgAll.addEventListener("click", e => { e.preventDefault(); showAllStatuses(); });
+    renderStatusControls();
+  }
+
   function addMarkerForPin(id){
     const pin = pins[id];
     if(!pin) return;
     const status = statusOfLatestLog(pin);
+    if(!statusSet().has(status)) return;
     const marker = L.marker([pin.lat, pin.lng], { icon: makeIcon(status) }).addTo(map);
     marker.on("click", () => openSidePanel(id));
     markers[id] = marker;
@@ -1018,6 +1091,7 @@
   function refreshMarker(id){
     if(markers[id]){ map.removeLayer(markers[id]); delete markers[id]; }
     addMarkerForPin(id);
+    renderStatusControls();
   }
 
   // ---------- Reverse geocoding ----------
@@ -1589,13 +1663,14 @@
       dot.on("popupopen", ev => {
         const el = ev.popup.getElement();
         const b = el.querySelector(".nb-open"); if(b) b.addEventListener("click", () => openNbInTab(n.id));
-        const z = el.querySelector(".nb-zoom"); if(z) z.addEventListener("click", () => { map.closePopup(); map.setView([n.lat, n.lng], 16); });
+        const z = el.querySelector(".nb-zoom"); 
       });
       dot.addTo(hailLayer);
     });
     hailLayer.addTo(map);
     hookHomeLayer();
     drawHomeLayer();
+    drawStreetLines();
   }
 
   function nbPopupHtml(n){
@@ -1604,7 +1679,7 @@
     return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
       fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
       '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
-      '<br><button class="nb-zoom save-btn" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
+      '<br><button type="button" class="nb-zoom save-btn" data-nb="' + escapeHtml(n.id) + '" onclick="window.__nbZoom && window.__nbZoom(this.getAttribute(\'data-nb\'))" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
       '<button class="nb-open save-btn" style="margin-top:6px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
   }
 
@@ -1711,6 +1786,7 @@
       : await supabaseClient.from("street_assignments").delete().eq("street_id", sid).select("street_id");
     if(r.error){ dbError(r.error, "save this street"); return; }
     if(who) streetAssign[sid] = who; else delete streetAssign[sid];
+    drawStreetLines(); drawHomeLayer();
     if(who && assignFor(nbId).status === "open") await saveAssign(nbId, { status:"assigned" });
     else { showToast("Saved.", "success", 1500); renderDispatch(); }
   }
@@ -1875,23 +1951,114 @@
   function knockerColor(id){ const ids = crewPeople().map(p => p.id); const i = ids.indexOf(id); return KNOCKER_COLORS[(i < 0 ? 0 : i) % KNOCKER_COLORS.length]; }
   function csvSafe(s){ return String(s || "").replace(/[",\r\n]/g, " ").trim(); }
 
-  async function loadNbHomesGeo(nbId){
-    if(homesGeo[nbId]) return homesGeo[nbId];
+  async function loadHomesInBounds(b){
     const out = [];
-    for(let from = 0; ; from += 1000){
-      const r = await supabaseClient.from("homes").select("id,street_id,address,lat,lng").eq("neighborhood_id", nbId).not("lat", "is", null).order("id").range(from, from + 999);
+    for(let from = 0; from < 8000; from += 1000){
+      const r = await supabaseClient.from("homes").select("id,street_id,neighborhood_id,address,lat,lng")
+        .gte("lat", b.getSouth()).lte("lat", b.getNorth()).gte("lng", b.getWest()).lte("lng", b.getEast())
+        .order("id").range(from, from + 999);
       if(r.error) throw r.error;
       out.push(...r.data);
       if(r.data.length < 1000) break;
     }
-    homesGeo[nbId] = out;
     return out;
   }
+
+  // Assigned streets drawn as thick colored lines, built from the houses on each street
+  let streetGeo = {}, streetLineLayer = null, streetLinesBusy = false, streetLinesPending = false;
+  async function loadStreetHomes(ids){
+    const need = ids.filter(id => !streetGeo[id]);
+    for(let i = 0; i < need.length; i += 80){
+      const chunk = need.slice(i, i + 80), got = {};
+      chunk.forEach(id => { got[id] = []; });
+      for(let from = 0; ; from += 1000){
+        const r = await supabaseClient.from("homes").select("street_id,lat,lng").in("street_id", chunk).not("lat", "is", null).order("id").range(from, from + 999);
+        if(r.error) throw r.error;
+        r.data.forEach(h => { if(got[h.street_id]) got[h.street_id].push([h.lat, h.lng]); });
+        if(r.data.length < 1000) break;
+      }
+      Object.assign(streetGeo, got);
+    }
+  }
+  function streetSegments(pts){
+    if(!pts.length) return { segs:[], mid:null };
+    const lat0 = pts[0][0] * Math.PI / 180, kx = 111320 * Math.cos(lat0), ky = 110540;
+    const groups = [];
+    pts.forEach(p => {
+      const x = p[1] * kx, y = p[0] * ky;
+      let best = null, bd = 30;
+      groups.forEach(g => { const d = Math.hypot(g.x - x, g.y - y); if(d < bd){ bd = d; best = g; } });
+      if(best){ best.n++; best.sx += x; best.sy += y; best.x = best.sx / best.n; best.y = best.sy / best.n; }
+      else groups.push({ x, y, sx:x, sy:y, n:1 });
+    });
+    const ll = g => [g.y / ky, g.x / kx], n = groups.length;
+    let cx = 0, cy = 0; groups.forEach(g => { cx += g.x; cy += g.y; }); cx /= n; cy /= n;
+    let mid = groups[0]; groups.forEach(g => { if(Math.hypot(g.x - cx, g.y - cy) < Math.hypot(mid.x - cx, mid.y - cy)) mid = g; });
+    if(n === 1){ const c = ll(groups[0]); return { segs:[[ [c[0], c[1] - 0.0001], [c[0], c[1] + 0.0001] ]], mid:c }; }
+    const inTree = new Array(n).fill(false), dist = new Array(n).fill(Infinity), from = new Array(n).fill(-1), segs = [];
+    dist[0] = 0;
+    for(let k = 0; k < n; k++){
+      let u = -1;
+      for(let i = 0; i < n; i++) if(!inTree[i] && (u < 0 || dist[i] < dist[u])) u = i;
+      inTree[u] = true;
+      if(from[u] >= 0 && dist[u] <= 350) segs.push([ll(groups[from[u]]), ll(groups[u])]);
+      for(let i = 0; i < n; i++){
+        if(inTree[i]) continue;
+        const d = Math.hypot(groups[i].x - groups[u].x, groups[i].y - groups[u].y);
+        if(d < dist[i]){ dist[i] = d; from[i] = u; }
+      }
+    }
+    return { segs, mid:ll(mid) };
+  }
+  function updateStreetTagVisibility(){
+    if(!map) return;
+    map.getContainer().classList.toggle("hide-street-tags", map.getZoom() < 15);
+  }
+  async function drawStreetLines(){
+    if(!map || !me) return;
+    if(streetLinesBusy){ streetLinesPending = true; return; }
+    streetLinesBusy = true;
+    try{
+      const ids = Object.keys(streetAssign).map(Number).filter(id => streetAssign[id]);
+      await loadStreetHomes(ids);
+      if(!map.getPane("streetLines")) map.createPane("streetLines").style.zIndex = 350;
+      const layer = L.layerGroup();
+      ids.forEach(id => {
+        const pts = streetGeo[id] || [];
+        if(!pts.length) return;
+        const who = streetAssign[id], color = knockerColor(who), s = streetById[id];
+        const shape = streetSegments(pts);
+        if(!shape.segs.length) return;
+        L.polyline(shape.segs, { pane:"streetLines", color:"#ffffff", weight:14, opacity:0.9, lineCap:"round", lineJoin:"round", interactive:false }).addTo(layer);
+        const line = L.polyline(shape.segs, { pane:"streetLines", color, weight:9, opacity:0.95, lineCap:"round", lineJoin:"round", interactive:false });
+        const who1 = String(nameFor(who)).split(" ")[0];
+        line.addTo(layer);
+        L.marker(shape.mid, { interactive:false, keyboard:false, icon:L.divIcon({ className:"street-tag-wrap", iconSize:null,
+          html:'<span class="street-tag" style="border-left-color:' + color + '">' + escapeHtml((s ? s.name : "") + " · " + who1) + '</span>' }) }).addTo(layer);
+      });
+      if(streetLineLayer) map.removeLayer(streetLineLayer);
+      streetLineLayer = layer.addTo(map);
+      updateStreetTagVisibility();
+    }catch(e){
+      console.warn("street lines", e);
+    }finally{
+      streetLinesBusy = false;
+      if(streetLinesPending){ streetLinesPending = false; drawStreetLines(); }
+    }
+  }
+  window.__nbZoom = function(id){
+    const n = nbById[id];
+    if(!n || !map) return;
+    map.closePopup();
+    map.setView([n.lat, n.lng], 16);
+    setTimeout(drawHomeLayer, 50);
+  };
 
   function hookHomeLayer(){
     if(homeHooked || !map) return;
     homeHooked = true;
     map.on("moveend", () => { clearTimeout(homeTimer); homeTimer = setTimeout(drawHomeLayer, 300); });
+    map.on("zoomend", updateStreetTagVisibility);
   }
 
   function setHomeHint(text){
@@ -1925,46 +2092,39 @@
       drawHomeLegend(null);
       const c = map.getCenter();
       const nearAny = nbs.some(n => n.lat != null && milesBetween(c.lat, c.lng, n.lat, n.lng) < 6);
-      setHomeHint(nearAny && map.getZoom() >= 12 ? "Zoom in to see which streets are taken" : "");
+      setHomeHint(nearAny && map.getZoom() >= 12 ? "Zoom in to see every house and who has it" : "");
       return;
     }
     if(homeBusy){ homePending = true; return; }
     homeBusy = true;
     try{
       if(!homeRenderer) homeRenderer = L.canvas({ padding:0.5 });
-      const c = map.getCenter(), bounds = map.getBounds().pad(0.3);
-      const near = nbs.filter(n => n.lat != null && milesBetween(c.lat, c.lng, n.lat, n.lng) < 8);
+      const homes = await loadHomesInBounds(map.getBounds().pad(0.25));
       const layer = L.layerGroup(), used = {};
-      let shown = 0, missing = false;
-      for(const n of near){
-        const homes = await loadNbHomesGeo(n.id);
-        if(!homes.length) missing = true;
-        const a = assignFor(n.id);
-        homes.forEach(hm => {
-          if(!bounds.contains([hm.lat, hm.lng])) return;
-          shown++;
-          const who = streetAssign[hm.street_id], s = streetById[hm.street_id];
-          let color, fill, label;
-          if(who){ color = knockerColor(who); fill = color; label = nameFor(who); used[who] = 1; }
-          else if(a.knockers.length){ color = "#3b4a34"; fill = "#ffffff"; label = "Neighborhood crew: " + a.knockers.map(id => nameFor(id)).join(", "); used.__crew = 1; }
-          else { color = "#8a8371"; fill = "#ffffff"; label = "Open, nobody assigned"; used.__open = 1; }
-          const m = L.circleMarker([hm.lat, hm.lng], { renderer:homeRenderer, radius:6, color, weight:2, fillColor:fill, fillOpacity:0.9, bubblingMouseEvents:false });
-          m.bindTooltip(escapeHtml(hm.address) + '<br>' + escapeHtml(s ? s.name : "") + ' · ' + escapeHtml(label), { direction:"top" });
-          m.on("click", () => {
-            pendingLatLng = L.latLng(hm.lat, hm.lng);
-            openNewPinModal();
-            $("pinAddress").value = hm.address;
-            $("pinNotes").placeholder = (s ? s.name + " · " : "") + label;
-          });
-          m.addTo(layer);
+      homes.forEach(hm => {
+        const who = streetAssign[hm.street_id], s = streetById[hm.street_id];
+        const a = hm.neighborhood_id ? assignFor(hm.neighborhood_id) : null;
+        let color, fill, label;
+        if(who){ color = knockerColor(who); fill = color; label = nameFor(who); used[who] = 1; }
+        else if(a && a.knockers && a.knockers.length){ color = "#3b4a34"; fill = "#ffffff"; label = "Neighborhood crew: " + a.knockers.map(id => nameFor(id)).join(", "); used.__crew = 1; }
+        else { color = "#8a8371"; fill = "#ffffff"; label = "Open, nobody assigned"; used.__open = 1; }
+        const m = L.circleMarker([hm.lat, hm.lng], { renderer:homeRenderer, radius:6, color, weight:2, fillColor:fill, fillOpacity:0.9, bubblingMouseEvents:false });
+        m.bindTooltip(escapeHtml(hm.address) + '<br>' + escapeHtml(s ? s.name : "") + ' · ' + escapeHtml(label), { direction:"top" });
+        m.on("click", () => {
+          pendingLatLng = L.latLng(hm.lat, hm.lng);
+          openNewPinModal();
+          $("pinAddress").value = hm.address;
+          $("pinNotes").placeholder = (s ? s.name + " · " : "") + label;
         });
-      }
+        m.addTo(layer);
+      });
       if(homeLayer) map.removeLayer(homeLayer);
       homeLayer = layer.addTo(map);
-      drawHomeLegend(shown ? used : null);
-      setHomeHint(!shown && missing ? (me.role === "admin" ? "Homes here aren't on the map yet. Dispatch → Put homes on the map." : "Homes here aren't on the map yet.") : "");
+      drawHomeLegend(homes.length ? used : null);
+      setHomeHint("");
     }catch(e){
       console.warn("home layer", e);
+      setHomeHint("Couldn't load the houses here. Move the map to try again.");
     }finally{
       homeBusy = false;
       if(homePending){ homePending = false; drawHomeLayer(); }
@@ -1980,7 +2140,7 @@
       const head = await supabaseClient.from("homes").select("id", { count:"exact", head:true }).is("geo_status", null);
       if(head.error) throw head.error;
       const total = head.count || 0;
-      if(!total){ say("Every home is already on the map."); return; }
+      if(!total){ say("Every home is already on the map. Zoom in on a hail area to see them."); showToast("Every home is already on the map. Nothing left to place. Zoom in on a hail area to see them.", "success", 6000); return; }
       let done = 0, found = 0;
       while(true){
         const r = await supabaseClient.from("homes").select("id,address,street_id").is("geo_status", null).order("id").limit(200);
@@ -2016,7 +2176,7 @@
         found += rows.filter(x => x.status === "match").length;
         say("Putting homes on the map… " + fmtN(done) + " of " + fmtN(total) + " (" + fmtN(found) + " found)");
       }
-      homesGeo = {};
+      streetGeo = {};
       say("Done: " + fmtN(found) + " of " + fmtN(done) + " homes are on the map. Zoom in on a hail area to see them.");
       showToast("Homes are on the map.", "success", 4000);
       drawHomeLayer();
