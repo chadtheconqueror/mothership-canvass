@@ -391,6 +391,12 @@
   .crew-stats b{ font-family:var(--font-display); font-size:20px; }
   .crew-stats span{ font-family:var(--font-mono); font-size:10px; text-transform:uppercase; color:var(--olive); }
 
+  .home-legend{ background:var(--paper); border:1px solid var(--line); padding:8px 10px; font-family:var(--font-mono); font-size:11px; box-shadow:0 4px 14px rgba(0,0,0,.15); max-width:190px; }
+  .home-legend b{ text-transform:uppercase; letter-spacing:.06em; color:var(--olive); }
+  .home-legend div{ display:flex; gap:6px; align-items:center; margin-top:4px; }
+  .home-legend .dot{ width:10px; height:10px; border-radius:50%; border:2px solid transparent; flex-shrink:0; }
+  .map-hint{ background:rgba(28,37,33,.85); color:var(--paper); font-family:var(--font-mono); font-size:11px; padding:5px 9px; border-radius:2px; }
+
   /* ---------- Toast notifications (replaces native alert/confirm, which the sandbox may block) ---------- */
   #toastContainer{
     position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:1200;
@@ -1580,10 +1586,16 @@
       L.circle([n.lat, n.lng], { radius:r, color:col, weight:1.5, fillColor:col, fillOpacity:0.10, interactive:false }).addTo(hailLayer);
       const dot = L.circleMarker([n.lat, n.lng], { radius:8, color:"#fff", weight:2, fillColor:col, fillOpacity:1, bubblingMouseEvents:false });
       dot.bindPopup(() => nbPopupHtml(n));
-      dot.on("popupopen", ev => { const b = ev.popup.getElement().querySelector(".nb-open"); if(b) b.addEventListener("click", () => openNbInTab(n.id)); });
+      dot.on("popupopen", ev => {
+        const el = ev.popup.getElement();
+        const b = el.querySelector(".nb-open"); if(b) b.addEventListener("click", () => openNbInTab(n.id));
+        const z = el.querySelector(".nb-zoom"); if(z) z.addEventListener("click", () => { map.closePopup(); map.setView([n.lat, n.lng], 16); });
+      });
       dot.addTo(hailLayer);
     });
     hailLayer.addTo(map);
+    hookHomeLayer();
+    drawHomeLayer();
   }
 
   function nbPopupHtml(n){
@@ -1592,7 +1604,8 @@
     return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
       fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
       '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
-      '<br><button class="nb-open save-btn" style="margin-top:8px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
+      '<br><button class="nb-zoom save-btn" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
+      '<button class="nb-open save-btn" style="margin-top:6px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
   }
 
   function openNbInTab(id){
@@ -1780,7 +1793,7 @@
     const v = $("dispatchView");
     if(!isManager()){ v.innerHTML = '<div class="empty-state">Only Chad, Luke and Chris can open Dispatch.</div>'; return; }
     let h = '<div class="sub-tabs">' + [["areas","Neighborhoods"],["crew","Crew"],["blocks","Knock blocks"]].map(x => '<button class="sub-tab' + (dispatchSub === x[0] ? ' active' : '') + '" data-sub="' + x[0] + '">' + x[1] + '</button>').join("") +
-      (me.role === "admin" ? '<label class="import-btn">Import hail lists<input type="file" id="importFile" accept=".json,application/json" hidden></label>' : '') + '</div>' +
+      (me.role === "admin" ? '<label class="import-btn">Import hail lists<input type="file" id="importFile" accept=".json,application/json" hidden></label><button type="button" class="import-btn" id="locateHomesBtn" style="margin-left:6px;border:none">Put homes on the map</button>' : '') + '</div>' +
       '<div id="importStatus" class="le-meta" style="margin-bottom:8px">' + escapeHtml(importMsg) + '</div>';
     if(dispatchSub === "areas") h += dispatchAreasHtml();
     if(dispatchSub === "crew") h += dispatchCrewHtml();
@@ -1788,6 +1801,7 @@
     v.innerHTML = h;
     v.querySelectorAll(".sub-tab").forEach(b => b.addEventListener("click", () => { dispatchSub = b.dataset.sub; renderDispatch(); }));
     const f = $("importFile"); if(f) f.addEventListener("change", () => { if(f.files && f.files[0]) importHailLists(f.files[0]); });
+    const lb = $("locateHomesBtn"); if(lb) lb.addEventListener("click", locateHomes);
     if(dispatchSub === "areas") wireDispatchAreas();
   }
 
@@ -1831,7 +1845,7 @@
           if(d.error) throw d.error;
         }
         for(let i = 0; i < a.homeRows.length; i += 1000){
-          const chunk = a.homeRows.slice(i, i + 1000).map(x => ({ street_id:ids[x[0]], address:x[1], storm_dates:x[2] || "", hail:x[3], built:x[4] || "", roof_sq:x[5], owner:x[6] || "" }));
+          const chunk = a.homeRows.slice(i, i + 1000).map(x => ({ street_id:ids[x[0]], neighborhood_id:a.id, address:x[1], storm_dates:x[2] || "", hail:x[3], built:x[4] || "", roof_sq:x[5], owner:x[6] || "" }));
           const ins = await supabaseClient.from("homes").insert(chunk);
           if(ins.error) throw ins.error;
           done += chunk.length;
@@ -1852,6 +1866,166 @@
       say("The import stopped partway. Run it again with the same file; it picks up without making duplicates.");
     }finally{
       const f2 = $("importFile"); if(f2) f2.disabled = false;
+    }
+  }
+
+  // ---------- Homes on the map, colored by who has each street ----------
+  const KNOCKER_COLORS = ["#2f6f8f","#c2478d","#8a5fbf","#d9822b","#1f8a70","#5a6fd6","#b5842a","#a13d31","#0f766e","#7c3aed"];
+  let homesGeo = {}, homeLayer = null, homeLegend = null, homeHint = null, homeBusy = false, homePending = false, homeHooked = false, homeTimer = null, homeRenderer = null, locating = false;
+  function knockerColor(id){ const ids = crewPeople().map(p => p.id); const i = ids.indexOf(id); return KNOCKER_COLORS[(i < 0 ? 0 : i) % KNOCKER_COLORS.length]; }
+  function csvSafe(s){ return String(s || "").replace(/[",\r\n]/g, " ").trim(); }
+
+  async function loadNbHomesGeo(nbId){
+    if(homesGeo[nbId]) return homesGeo[nbId];
+    const out = [];
+    for(let from = 0; ; from += 1000){
+      const r = await supabaseClient.from("homes").select("id,street_id,address,lat,lng").eq("neighborhood_id", nbId).not("lat", "is", null).order("id").range(from, from + 999);
+      if(r.error) throw r.error;
+      out.push(...r.data);
+      if(r.data.length < 1000) break;
+    }
+    homesGeo[nbId] = out;
+    return out;
+  }
+
+  function hookHomeLayer(){
+    if(homeHooked || !map) return;
+    homeHooked = true;
+    map.on("moveend", () => { clearTimeout(homeTimer); homeTimer = setTimeout(drawHomeLayer, 300); });
+  }
+
+  function setHomeHint(text){
+    if(homeHint){ homeHint.remove(); homeHint = null; }
+    if(!text || !map) return;
+    homeHint = L.control({ position:"bottomright" });
+    homeHint.onAdd = () => { const d = L.DomUtil.create("div", "map-hint"); d.textContent = text; d.style.marginBottom = "70px"; return d; };
+    homeHint.addTo(map);
+  }
+
+  function drawHomeLegend(used){
+    if(homeLegend){ homeLegend.remove(); homeLegend = null; }
+    if(!used || !map) return;
+    homeLegend = L.control({ position:"topright" });
+    homeLegend.onAdd = () => {
+      const d = L.DomUtil.create("div", "home-legend");
+      d.innerHTML = '<b>Who has each street</b>' +
+        Object.keys(used).filter(k => k.indexOf("__") !== 0).map(id => '<div><span class="dot" style="background:' + knockerColor(id) + '"></span>' + escapeHtml(nameFor(id)) + '</div>').join("") +
+        (used.__crew ? '<div><span class="dot" style="background:#fff;border-color:#3b4a34"></span>Neighborhood crew</div>' : '') +
+        (used.__open ? '<div><span class="dot" style="background:#fff;border-color:#8a8371"></span>Open, nobody assigned</div>' : '');
+      L.DomEvent.disableClickPropagation(d);
+      return d;
+    };
+    homeLegend.addTo(map);
+  }
+
+  async function drawHomeLayer(){
+    if(!map || !me) return;
+    if(map.getZoom() < 15){
+      if(homeLayer){ map.removeLayer(homeLayer); homeLayer = null; }
+      drawHomeLegend(null);
+      const c = map.getCenter();
+      const nearAny = nbs.some(n => n.lat != null && milesBetween(c.lat, c.lng, n.lat, n.lng) < 6);
+      setHomeHint(nearAny && map.getZoom() >= 12 ? "Zoom in to see which streets are taken" : "");
+      return;
+    }
+    if(homeBusy){ homePending = true; return; }
+    homeBusy = true;
+    try{
+      if(!homeRenderer) homeRenderer = L.canvas({ padding:0.5 });
+      const c = map.getCenter(), bounds = map.getBounds().pad(0.3);
+      const near = nbs.filter(n => n.lat != null && milesBetween(c.lat, c.lng, n.lat, n.lng) < 8);
+      const layer = L.layerGroup(), used = {};
+      let shown = 0, missing = false;
+      for(const n of near){
+        const homes = await loadNbHomesGeo(n.id);
+        if(!homes.length) missing = true;
+        const a = assignFor(n.id);
+        homes.forEach(hm => {
+          if(!bounds.contains([hm.lat, hm.lng])) return;
+          shown++;
+          const who = streetAssign[hm.street_id], s = streetById[hm.street_id];
+          let color, fill, label;
+          if(who){ color = knockerColor(who); fill = color; label = nameFor(who); used[who] = 1; }
+          else if(a.knockers.length){ color = "#3b4a34"; fill = "#ffffff"; label = "Neighborhood crew: " + a.knockers.map(id => nameFor(id)).join(", "); used.__crew = 1; }
+          else { color = "#8a8371"; fill = "#ffffff"; label = "Open, nobody assigned"; used.__open = 1; }
+          const m = L.circleMarker([hm.lat, hm.lng], { renderer:homeRenderer, radius:6, color, weight:2, fillColor:fill, fillOpacity:0.9, bubblingMouseEvents:false });
+          m.bindTooltip(escapeHtml(hm.address) + '<br>' + escapeHtml(s ? s.name : "") + ' · ' + escapeHtml(label), { direction:"top" });
+          m.on("click", () => {
+            pendingLatLng = L.latLng(hm.lat, hm.lng);
+            openNewPinModal();
+            $("pinAddress").value = hm.address;
+            $("pinNotes").placeholder = (s ? s.name + " · " : "") + label;
+          });
+          m.addTo(layer);
+        });
+      }
+      if(homeLayer) map.removeLayer(homeLayer);
+      homeLayer = layer.addTo(map);
+      drawHomeLegend(shown ? used : null);
+      setHomeHint(!shown && missing ? (me.role === "admin" ? "Homes here aren't on the map yet. Dispatch → Put homes on the map." : "Homes here aren't on the map yet.") : "");
+    }catch(e){
+      console.warn("home layer", e);
+    }finally{
+      homeBusy = false;
+      if(homePending){ homePending = false; drawHomeLayer(); }
+    }
+  }
+
+  async function locateHomes(){
+    if(locating) return;
+    locating = true;
+    const say = t => { importMsg = t; const el = $("importStatus"); if(el) el.textContent = t; };
+    const btn = $("locateHomesBtn"); if(btn) btn.disabled = true;
+    try{
+      const head = await supabaseClient.from("homes").select("id", { count:"exact", head:true }).is("geo_status", null);
+      if(head.error) throw head.error;
+      const total = head.count || 0;
+      if(!total){ say("Every home is already on the map."); return; }
+      let done = 0, found = 0;
+      while(true){
+        const r = await supabaseClient.from("homes").select("id,address,street_id").is("geo_status", null).order("id").limit(200);
+        if(r.error) throw r.error;
+        if(!r.data.length) break;
+        const csv = r.data.map(hm => {
+          const s = streetById[hm.street_id] || {};
+          const st = String(s.zip || "").indexOf("29") === 0 ? "SC" : "NC";
+          return hm.id + "," + csvSafe(hm.address) + "," + csvSafe(s.city) + "," + st + "," + csvSafe(s.zip);
+        }).join("\n");
+        let text = null;
+        for(let attempt = 0; attempt < 4 && text === null; attempt++){
+          try{
+            const g = await fetch("/api/geocode", { method:"POST", body:csv });
+            if(g.ok) text = await g.text();
+            else await new Promise(res => setTimeout(res, 3000));
+          }catch(e){ await new Promise(res => setTimeout(res, 3000)); }
+        }
+        if(text === null) throw new Error("the address lookup service didn't answer");
+        const got = {};
+        text.split("\n").forEach(line => {
+          const f = []; line.replace(/"([^"]*)"/g, (m0, v) => { f.push(v); return m0; });
+          if(f.length >= 6 && f[2] === "Match"){
+            const ll = f[5].split(",");
+            const lng = parseFloat(ll[0]), lat = parseFloat(ll[1]);
+            if(isFinite(lat) && isFinite(lng)) got[f[0]] = { lat, lng };
+          }
+        });
+        const rows = r.data.map(hm => got[hm.id] ? { id:hm.id, lat:got[hm.id].lat, lng:got[hm.id].lng, status:"match" } : { id:hm.id, lat:null, lng:null, status:"nomatch" });
+        const w = await supabaseClient.rpc("set_home_locations", { rows });
+        if(w.error) throw w.error;
+        done += rows.length;
+        found += rows.filter(x => x.status === "match").length;
+        say("Putting homes on the map… " + fmtN(done) + " of " + fmtN(total) + " (" + fmtN(found) + " found)");
+      }
+      homesGeo = {};
+      say("Done: " + fmtN(found) + " of " + fmtN(done) + " homes are on the map. Zoom in on a hail area to see them.");
+      showToast("Homes are on the map.", "success", 4000);
+      drawHomeLayer();
+    }catch(e){
+      dbError(e, "finish putting homes on the map");
+      say("Stopped partway. Press the button again; it picks up where it left off.");
+    }finally{
+      locating = false;
+      const b2 = $("locateHomesBtn"); if(b2) b2.disabled = false;
     }
   }
 
