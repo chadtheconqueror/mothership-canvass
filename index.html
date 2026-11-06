@@ -382,16 +382,29 @@
   <div class="login-card">
     <div class="eyebrow">Team Access</div>
     <h1>Mothership Canvass</h1>
-    <div class="sub">Pick your name to pull up the shared team map.</div>
+    <div class="sub" id="loginSub">Sign in with your email and password.</div>
 
-    <label for="memberSelect">Team member</label>
-    <select id="memberSelect"></select>
+    <div id="signInForm">
+      <label for="emailInput">Email</label>
+      <input type="text" id="emailInput" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@example.com">
 
-    <label for="passInput">Team password</label>
-    <input type="password" id="passInput" placeholder="••••••••" autocomplete="off">
+      <label for="passInput">Password</label>
+      <input type="password" id="passInput" placeholder="••••••••" autocomplete="current-password">
 
-    <button class="login-btn" id="loginBtn">Sign in</button>
-    <div class="login-error" id="loginError">Wrong password — try again.</div>
+      <button class="login-btn" id="loginBtn">Sign in</button>
+    </div>
+
+    <div id="changePassForm" style="display:none;">
+      <label for="newPass1">New password</label>
+      <input type="password" id="newPass1" autocomplete="new-password" placeholder="At least 8 characters">
+      <label for="newPass2">Type it again</label>
+      <input type="password" id="newPass2" autocomplete="new-password">
+      <button class="login-btn" id="setNewPassBtn">Save my password</button>
+      <button class="login-btn" id="cancelChangeBtn" style="background:transparent;color:var(--olive);border:1px solid var(--line);margin-top:10px;">Sign out</button>
+    </div>
+
+    <div class="login-error" id="loginError"></div>
+    <div class="login-foot">Forgot your password? Ask Chad to reset it.</div>
   </div>
 </div>
 
@@ -468,17 +481,11 @@
       <div class="team-card">
         <h3>Team members</h3>
         <div id="memberList"></div>
-        <div class="add-row">
-          <input type="text" id="newMemberInput" placeholder="Add team member name">
-          <button id="addMemberBtn">Add</button>
-        </div>
+        <div class="le-meta" id="teamHelp" style="margin-top:12px;line-height:1.5;"></div>
       </div>
       <div class="team-card">
-        <h3>Team password</h3>
-        <div class="add-row">
-          <input type="text" id="newPassInput" placeholder="New password">
-          <button id="setPassBtn">Update</button>
-        </div>
+        <h3>My password</h3>
+        <button class="save-btn" id="changeMyPassBtn" style="width:auto;padding:10px 16px;margin-top:0;">Change my password</button>
       </div>
     </div>
   </main>
@@ -525,11 +532,7 @@
     sold:          { label:"Sold / closed",        color:"var(--status-sold)",    hex:"#8a5fbf" }
   };
 
-  const DATA_KEY = "canvass-data-v1";
-  const TEAM_KEY = "team-config-v1";
   const DEFAULT_CENTER = [35.0007, -80.9437]; // Fort Mill, SC
-  const DEFAULT_MEMBERS = ["Chad"];
-  const DEFAULT_PASSWORD = "fortmill";
 
   // ====== SUPABASE SETUP — fill these in with your own project's values ======
   // Find both in your Supabase project dashboard under Project Settings > API.
@@ -548,20 +551,9 @@
   const hasTomTom = !!(TOMTOM_API_KEY && TOMTOM_API_KEY !== "YOUR_TOMTOM_API_KEY");
   // ==================================================================================================
 
-  async function kvGet(key){
-    if(!supabaseClient) throw new Error("Supabase isn't configured yet — add your project URL and key near the top of the file.");
-    const { data, error } = await supabaseClient.from("kv_store").select("value").eq("key", key).maybeSingle();
-    if(error) throw error;
-    return data ? data.value : null;
-  }
-  async function kvSet(key, value){
-    if(!supabaseClient) throw new Error("Supabase isn't configured yet — add your project URL and key near the top of the file.");
-    const { error } = await supabaseClient.from("kv_store").upsert({ key, value, updated_at: new Date().toISOString() });
-    if(error) throw error;
-  }
-
-  let teamConfig = { members: DEFAULT_MEMBERS.slice(), password: DEFAULT_PASSWORD };
-  let pins = {}; // id -> {lat,lng,address,logs:[{member,status,notes,timestamp}]}
+  let profiles = {};   // id -> profile row
+  let me = null;       // my profile
+  let pins = {};       // door id -> {lat,lng,address,created_by,logs:[{id,member_id,member,status,notes,timestamp}]}
   let map, markers = {};
   let currentUser = null;
   let selectedNewStatus = "talked";
@@ -605,75 +597,166 @@
     });
   }
 
-  // ---------- Storage helpers (Supabase-backed) ----------
-  async function loadTeamConfig(){
-    try{
-      const val = await kvGet(TEAM_KEY);
-      if(val){ teamConfig = val; }
-      else { await saveTeamConfig(); }
-    }catch(e){
-      console.warn("Couldn't load team config:", e && e.message);
-      showToast("Couldn't reach the database: " + (e && e.message ? e.message : "unknown error"), "error", 9000);
-    }
+  // ---------- Data (one row per door, one row per visit) ----------
+  function nameFor(memberId, fallback){
+    const p = memberId && profiles[memberId];
+    return p ? (p.full_name || p.email) : (fallback || "Unknown");
   }
-  async function saveTeamConfig(){
-    try{ await kvSet(TEAM_KEY, teamConfig); }
-    catch(e){
-      console.error("Failed to save team config", e);
-      showToast("Couldn't save team changes: " + (e && e.message ? e.message : "unknown error"), "error", 9000);
-    }
+  function isManager(){ return !!me && (me.role === "admin" || me.role === "dispatch"); }
+  function memberNames(){
+    const s = new Set(Object.values(profiles).filter(p => p.active).map(p => p.full_name || p.email));
+    Object.values(pins).forEach(p => (p.logs || []).forEach(l => s.add(l.member)));
+    return [...s].sort();
   }
+  function dbError(e, what){
+    console.error(what, e);
+    showToast("Couldn't " + what + ": " + (e && e.message ? e.message : "check your connection and try again."), "error", 8000);
+  }
+
+  async function fetchAll(table, columns, order){
+    const out = [];
+    const size = 1000;
+    for(let from = 0; ; from += size){
+      const { data, error } = await supabaseClient.from(table).select(columns).order(order, { ascending:true }).range(from, from + size - 1);
+      if(error) throw error;
+      out.push(...data);
+      if(data.length < size) break;
+    }
+    return out;
+  }
+
+  async function loadProfiles(){
+    const { data, error } = await supabaseClient.from("profiles").select("id,email,full_name,legacy_name,role,active,must_change_password");
+    if(error) throw error;
+    profiles = {};
+    data.forEach(p => { profiles[p.id] = p; });
+  }
+
   async function loadPins(){
     try{
-      const val = await kvGet(DATA_KEY);
-      if(val){ pins = val; }
+      const [doors, visits] = await Promise.all([
+        fetchAll("doors", "id,lat,lng,address,created_by", "created_at"),
+        fetchAll("visits", "id,door_id,member_id,member_name,status,notes,visited_at", "visited_at")
+      ]);
+      const next = {};
+      doors.forEach(d => { next[d.id] = { lat:d.lat, lng:d.lng, address:d.address, created_by:d.created_by, logs:[] }; });
+      visits.forEach(v => {
+        const pin = next[v.door_id];
+        if(!pin) return;
+        pin.logs.push({ id:v.id, member_id:v.member_id, member:nameFor(v.member_id, v.member_name), status:v.status, notes:v.notes || "", timestamp:new Date(v.visited_at).getTime() });
+      });
+      pins = next;
     }catch(e){
-      console.warn("Couldn't load pins:", e && e.message);
-      showToast("Couldn't reach the database: " + (e && e.message ? e.message : "unknown error"), "error", 9000);
-      pins = {};
+      dbError(e, "load the team map");
     }
   }
-  async function savePins(){
-    try{ await kvSet(DATA_KEY, pins); }
-    catch(e){ console.error("Failed to save pins", e); showToast("Couldn't save — check your connection and try again.", "error"); }
+
+  function redrawAllMarkers(){
+    if(!map) return;
+    Object.keys(markers).forEach(id => { map.removeLayer(markers[id]); });
+    markers = {};
+    Object.keys(pins).forEach(id => addMarkerForPin(id));
   }
 
-  // ---------- Login ----------
-  function populateMemberSelect(){
-    const sel = $("memberSelect");
-    sel.innerHTML = teamConfig.members.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+  async function refreshData(){
+    if($("sidePanel").classList.contains("open") || $("newPinModal").classList.contains("open")) return;
+    await loadPins();
+    redrawAllMarkers();
   }
 
-  const SESSION_KEY = "mothership-session-v1";
+  // ---------- Sign in ----------
+  function showLoginError(msg){
+    const el = $("loginError");
+    el.textContent = msg || "";
+    el.style.display = msg ? "block" : "none";
+  }
+  function showSignInForm(){
+    $("signInForm").style.display = "block";
+    $("changePassForm").style.display = "none";
+    $("loginSub").textContent = "Sign in with your email and password.";
+  }
+  function showChangePassForm(first){
+    $("signInForm").style.display = "none";
+    $("changePassForm").style.display = "block";
+    $("loginSub").textContent = first ? "Welcome! Pick your own password before you start." : "Pick a new password.";
+    $("newPass1").value = "";
+    $("newPass2").value = "";
+  }
+  function showLoginScreen(){
+    $("app").style.display = "none";
+    $("loginScreen").style.display = "flex";
+  }
 
-  function performLogin(member){
-    currentUser = member;
+  async function afterAuth(){
+    const res = await supabaseClient.auth.getUser();
+    const user = res && res.data ? res.data.user : null;
+    if(!user){ showLoginScreen(); showSignInForm(); return; }
+    try{ await loadProfiles(); }catch(e){ dbError(e, "load the team"); }
+    me = profiles[user.id] || null;
+    if(!me || !me.active){
+      await supabaseClient.auth.signOut();
+      me = null;
+      showLoginScreen(); showSignInForm();
+      showLoginError("Your account isn't turned on yet. Ask Chad to turn it on.");
+      return;
+    }
+    if(me.must_change_password){ showLoginScreen(); showChangePassForm(true); return; }
+    currentUser = me.full_name || me.email;
+    showLoginError("");
     $("loginScreen").style.display = "none";
     $("app").style.display = "flex";
-    $("whoLabel").textContent = "Signed in as " + member;
-    try{ localStorage.setItem(SESSION_KEY, JSON.stringify({ member })); }catch(e){ /* localStorage unavailable — session just won't persist */ }
+    $("whoLabel").textContent = "Signed in as " + currentUser;
+    await loadPins();
     initApp();
+    redrawAllMarkers();
   }
 
   $("loginBtn").addEventListener("click", async () => {
-    const member = $("memberSelect").value;
-    const pass = $("passInput").value;
-    if(pass !== teamConfig.password){
-      $("loginError").style.display = "block";
-      return;
-    }
-    performLogin(member);
+    const email = $("emailInput").value.trim().toLowerCase();
+    const password = $("passInput").value;
+    if(!email || !password){ showLoginError("Enter your email and password."); return; }
+    $("loginBtn").disabled = true;
+    $("loginBtn").textContent = "Signing in…";
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    $("loginBtn").disabled = false;
+    $("loginBtn").textContent = "Sign in";
+    if(error){ showLoginError("That email and password didn't match. Try again, or ask Chad to reset it."); return; }
+    $("passInput").value = "";
+    await afterAuth();
   });
   $("passInput").addEventListener("keydown", e => { if(e.key === "Enter") $("loginBtn").click(); });
 
-  $("logoutBtn").addEventListener("click", () => {
+  $("setNewPassBtn").addEventListener("click", async () => {
+    const a = $("newPass1").value, b = $("newPass2").value;
+    if(a.length < 8){ showLoginError("Use at least 8 characters."); return; }
+    if(a !== b){ showLoginError("The two passwords don't match."); return; }
+    $("setNewPassBtn").disabled = true;
+    const { error } = await supabaseClient.auth.updateUser({ password: a });
+    if(error){ $("setNewPassBtn").disabled = false; showLoginError("Couldn't save your password: " + error.message); return; }
+    const r = await supabaseClient.rpc("password_changed");
+    $("setNewPassBtn").disabled = false;
+    if(r.error){ showLoginError("Your password was saved, but setup didn't finish: " + r.error.message); return; }
+    showLoginError("");
+    showToast("Password saved.", "success", 3000);
+    showSignInForm();
+    await afterAuth();
+  });
+  $("cancelChangeBtn").addEventListener("click", async () => {
+    await supabaseClient.auth.signOut();
+    me = null;
+    showLoginError("");
+    showSignInForm();
+  });
+
+  $("logoutBtn").addEventListener("click", async () => {
     stopLiveLocationTracking();
+    await supabaseClient.auth.signOut();
     currentUser = null;
-    try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
-    $("app").style.display = "none";
-    $("loginScreen").style.display = "flex";
+    me = null;
+    showLoginScreen();
+    showSignInForm();
+    showLoginError("");
     $("passInput").value = "";
-    $("loginError").style.display = "none";
   });
 
   // ---------- Tabs ----------
@@ -991,17 +1074,24 @@
     const address = $("pinAddress").value.trim() || `Dropped pin (${pendingLatLng.lat.toFixed(5)}, ${pendingLatLng.lng.toFixed(5)})`;
     const notes = $("pinNotes").value.trim();
     const id = "pin_" + Date.now() + "_" + Math.floor(Math.random()*1000);
-    pins[id] = {
-      lat: pendingLatLng.lat,
-      lng: pendingLatLng.lng,
-      address,
-      logs: [{ member: currentUser, status: selectedNewStatus, notes, timestamp: Date.now() }]
-    };
+    const latlng = pendingLatLng;
     $("newPinModal").classList.remove("open");
     pendingLatLng = null;
-    addMarkerForPin(id);
-    await savePins();
-    showToast("Visit logged.", "success", 2500);
+    $("savePinBtn").disabled = true;
+    try{
+      const d = await supabaseClient.from("doors").insert({ id, lat: latlng.lat, lng: latlng.lng, address });
+      if(d.error) throw d.error;
+      const v = await supabaseClient.from("visits").insert({ door_id: id, status: selectedNewStatus, notes }).select("id,visited_at").single();
+      if(v.error) throw v.error;
+      pins[id] = { lat: latlng.lat, lng: latlng.lng, address, created_by: me && me.id,
+        logs: [{ id: v.data.id, member_id: me && me.id, member: currentUser, status: selectedNewStatus, notes, timestamp: new Date(v.data.visited_at).getTime() }] };
+      addMarkerForPin(id);
+      showToast("Visit logged.", "success", 2500);
+    }catch(e){
+      dbError(e, "save this visit");
+    }finally{
+      $("savePinBtn").disabled = false;
+    }
   });
 
   // ---------- Side panel ----------
@@ -1076,6 +1166,11 @@
       </div>
     `;
 
+    panel.querySelectorAll(".le-edit-btn, .le-delete-btn").forEach(b => {
+      const lg = pin.logs[parseInt(b.dataset.index, 10)];
+      if(!(isManager() || (me && lg && lg.member_id === me.id))) b.style.display = "none";
+    });
+
     $("closePanelBtn").addEventListener("click", () => {
       panel.classList.remove("open");
       activePinId = null;
@@ -1090,9 +1185,10 @@
       $("addressSaveBtn").addEventListener("click", async () => {
         const newAddr = $("addressEditInput").value.trim();
         if(newAddr){
-          pin.address = newAddr;
-          await savePins();
-          showToast("Address updated.", "success", 2500);
+          const r = await supabaseClient.from("doors").update({ address: newAddr, updated_at: new Date().toISOString() }).eq("id", id).select("id");
+          if(r.error) dbError(r.error, "update the address");
+          else if(!r.data || !r.data.length) showToast("Only someone who logged this door, or Luke or Chad, can change its address.", "error", 6000);
+          else { pin.address = newAddr; showToast("Address updated.", "success", 2500); }
         }
         openSidePanel(id, editingIndex, false);
       });
@@ -1116,16 +1212,21 @@
         const idx = parseInt(btn.dataset.index, 10);
         const ok = await showConfirm("Delete this log entry? This can't be undone.");
         if(!ok) return;
+        const log = pin.logs[idx];
+        const del = await supabaseClient.from("visits").delete().eq("id", log.id).select("id");
+        if(del.error){ dbError(del.error, "delete this entry"); return; }
+        if(!del.data || !del.data.length){ showToast("You can only delete your own entries.", "error", 5000); return; }
         pin.logs.splice(idx, 1);
         if(pin.logs.length === 0){
-          delete pins[id];
-          if(markers[id]){ map.removeLayer(markers[id]); delete markers[id]; }
-          panel.classList.remove("open");
-          activePinId = null;
-          await savePins();
-          return;
+          const dd = await supabaseClient.from("doors").delete().eq("id", id).select("id");
+          if(!dd.error && dd.data && dd.data.length){
+            delete pins[id];
+            if(markers[id]){ map.removeLayer(markers[id]); delete markers[id]; }
+            panel.classList.remove("open");
+            activePinId = null;
+            return;
+          }
         }
-        await savePins();
         refreshMarker(id);
         openSidePanel(id);
       });
@@ -1143,8 +1244,10 @@
 
       panel.querySelector(".le-save-btn").addEventListener("click", async () => {
         const notes = $("editNotes").value.trim();
+        const up = await supabaseClient.from("visits").update({ status: editStatus, notes }).eq("id", editEntry.id).select("id");
+        if(up.error){ dbError(up.error, "save your changes"); return; }
+        if(!up.data || !up.data.length){ showToast("You can only edit your own entries.", "error", 5000); return; }
         pin.logs[editingIndex] = { ...editEntry, status: editStatus, notes };
-        await savePins();
         refreshMarker(id);
         openSidePanel(id);
       });
@@ -1162,10 +1265,11 @@
 
     $("panelSaveBtn").addEventListener("click", async () => {
       const notes = $("panelNotes").value.trim();
-      pins[id].logs.push({ member: currentUser, status: panelStatus, notes, timestamp: Date.now() });
       $("panelSaveBtn").disabled = true;
       $("panelSaveBtn").textContent = "Saving…";
-      await savePins();
+      const ins = await supabaseClient.from("visits").insert({ door_id: id, status: panelStatus, notes }).select("id,visited_at").single();
+      if(ins.error){ dbError(ins.error, "log this visit"); $("panelSaveBtn").disabled = false; $("panelSaveBtn").textContent = "Log this visit"; return; }
+      pins[id].logs.push({ id: ins.data.id, member_id: me && me.id, member: currentUser, status: panelStatus, notes, timestamp: new Date(ins.data.visited_at).getTime() });
       refreshMarker(id);
       openSidePanel(id);
     });
@@ -1233,7 +1337,7 @@
     const sel = $("filterMember");
     const current = sel.value;
     sel.innerHTML = `<option value="">All team members</option>` +
-      teamConfig.members.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+      memberNames().map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
     sel.value = current;
   }
 
@@ -1275,7 +1379,7 @@
 
     // Leaderboard — appointments set and deals closed per team member
     const byMember = {};
-    teamConfig.members.forEach(m => { byMember[m] = { appointments:0, deals:0, visits:0 }; });
+    memberNames().forEach(m => { byMember[m] = { appointments:0, deals:0, visits:0 }; });
     allLogs.forEach(log => {
       if(!byMember[log.member]) byMember[log.member] = { appointments:0, deals:0, visits:0 };
       byMember[log.member].visits++;
@@ -1319,46 +1423,44 @@
   }
 
   // ---------- Team view ----------
+  const ROLE_LABEL = { admin:"Admin", dispatch:"Dispatch", pm:"Project manager", knocker:"Knocker" };
   function renderTeam(){
-    $("memberList").innerHTML = teamConfig.members.map((m, i) => `
-      <div class="member-row">
-        <span>${escapeHtml(m)}</span>
-        <button data-idx="${i}" class="removeMemberBtn">Remove</button>
-      </div>
-    `).join("") || `<div class="empty-state" style="padding:20px 0;">No team members yet.</div>`;
-
-    document.querySelectorAll(".removeMemberBtn").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        if(teamConfig.members.length <= 1){ showToast("Keep at least one team member.", "error"); return; }
-        teamConfig.members.splice(idx, 1);
-        await saveTeamConfig();
-        renderTeam();
-        populateMemberSelect();
-      });
-    });
+    const list = Object.values(profiles).sort((a,b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+    const admin = !!me && me.role === "admin";
+    $("memberList").innerHTML = list.map(p => {
+      let html = '<div class="member-row"><span>' + escapeHtml(p.full_name || p.email) +
+        '<br><span class="le-meta">' + escapeHtml(p.email) + ' · ' + (ROLE_LABEL[p.role] || p.role) +
+        (p.active ? '' : ' · turned off') + (p.must_change_password ? ' · hasn’t set a password yet' : '') + '</span></span>';
+      if(admin && p.id !== me.id){
+        html += '<span style="display:flex;gap:8px;align-items:center;flex-shrink:0;"><select data-id="' + p.id + '" class="roleSel" style="width:auto;padding:6px;">' +
+          Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"' + (p.role === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
+          '</select><button data-id="' + p.id + '" class="activeBtn">' + (p.active ? 'Turn off' : 'Turn on') + '</button></span>';
+      }
+      return html + '</div>';
+    }).join('') || '<div class="empty-state" style="padding:20px 0;">No team members yet.</div>';
+    $("teamHelp").textContent = admin
+      ? "To add someone: in Supabase, add them to the roster table (email, name, role), then go to Authentication → Users → Add user → Create new user, enter their email and the temporary password, and tick Auto Confirm User. They pick their own password the first time they sign in. Turning someone off locks them out right away; their visits stay."
+      : "";
+    if(!admin) return;
+    document.querySelectorAll(".roleSel").forEach(sel => sel.addEventListener("change", async () => {
+      const r = await supabaseClient.from("profiles").update({ role: sel.value }).eq("id", sel.dataset.id).select("id");
+      if(r.error) dbError(r.error, "change the role");
+      else { profiles[sel.dataset.id].role = sel.value; showToast("Role updated.", "success", 2500); renderTeam(); }
+    }));
+    document.querySelectorAll(".activeBtn").forEach(btn => btn.addEventListener("click", async () => {
+      const p = profiles[btn.dataset.id];
+      if(p.active){
+        $("confirmYesBtn").textContent = "Turn off";
+        const ok = await showConfirm("Turn off " + (p.full_name || p.email) + "? They won't be able to sign in. Their visits stay.");
+        $("confirmYesBtn").textContent = "Delete";
+        if(!ok) return;
+      }
+      const r = await supabaseClient.from("profiles").update({ active: !p.active }).eq("id", p.id).select("id");
+      if(r.error) dbError(r.error, "update this person");
+      else { p.active = !p.active; renderTeam(); }
+    }));
   }
-
-  $("addMemberBtn").addEventListener("click", async () => {
-    const name = $("newMemberInput").value.trim();
-    if(!name) return;
-    if(teamConfig.members.includes(name)){ $("newMemberInput").value = ""; return; }
-    teamConfig.members.push(name);
-    $("newMemberInput").value = "";
-    await saveTeamConfig();
-    renderTeam();
-    populateMemberSelect();
-  });
-  $("newMemberInput").addEventListener("keydown", e => { if(e.key === "Enter") $("addMemberBtn").click(); });
-
-  $("setPassBtn").addEventListener("click", async () => {
-    const val = $("newPassInput").value.trim();
-    if(!val){ return; }
-    teamConfig.password = val;
-    $("newPassInput").value = "";
-    await saveTeamConfig();
-    showToast("Team password updated.", "success");
-  });
+  $("changeMyPassBtn").addEventListener("click", () => { showLoginScreen(); showLoginError(""); showChangePassForm(false); });
 
   // ---------- Utils ----------
   function escapeHtml(str){
@@ -1373,26 +1475,19 @@
   }
 
   (async function boot(){
-    if(!supabaseClient){
-      showToast("Supabase isn't configured yet — add your project URL and anon key near the top of the HTML file.", "error", 12000);
-    }
-    await loadTeamConfig();
-    await loadPins();
-    populateMemberSelect();
     $("loadingScreen").style.display = "none";
-
-    // Resume a saved session if we have one and that member is still on the team
-    try{
-      const saved = localStorage.getItem(SESSION_KEY);
-      if(saved){
-        const session = JSON.parse(saved);
-        if(session && session.member && teamConfig.members.includes(session.member)){
-          performLogin(session.member);
-        } else {
-          localStorage.removeItem(SESSION_KEY);
-        }
-      }
-    }catch(e){ /* localStorage unavailable or corrupted session — just show login normally */ }
+    if(!supabaseClient){
+      showToast("Couldn't load the sign-in system. Check your connection and reload the page.", "error", 12000);
+      return;
+    }
+    await afterAuth();
+    // Keep the team map fresh: reload when the app comes back on screen, and every 2 minutes while open
+    document.addEventListener("visibilitychange", () => {
+      if(document.visibilityState === "visible" && me && $("app").style.display === "flex") refreshData();
+    });
+    setInterval(() => {
+      if(me && document.visibilityState === "visible" && $("app").style.display === "flex") refreshData();
+    }, 120000);
   })();
 })();
 </script>
