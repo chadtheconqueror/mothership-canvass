@@ -1,0 +1,1846 @@
+(function(){
+  "use strict";
+
+  const STATUS_META = {
+    talked:        { label:"Talked to homeowner", color:"var(--status-talked)",  hex:"#3f7d4f" },
+    appointment:   { label:"Appointment set",      color:"var(--status-appointment)", hex:"#c2478d" },
+    nothome:       { label:"Not home",             color:"var(--status-nothome)", hex:"#c98a2c" },
+    callback:      { label:"Callback requested",   color:"var(--status-callback)",hex:"#2f6f8f" },
+    notinterested: { label:"Not interested",       color:"var(--status-notinterested)", hex:"#a13d31" },
+    sold:          { label:"Sold / closed",        color:"var(--status-sold)",    hex:"#8a5fbf" }
+  };
+
+  const DEFAULT_CENTER = [35.0007, -80.9437]; // Fort Mill, SC
+
+  // ====== SUPABASE SETUP — fill these in with your own project's values ======
+  // Find both in your Supabase project dashboard under Project Settings > API.
+  const SUPABASE_URL = "https://ypuvvryeoruclxobwzhl.supabase.co"; // e.g. "https://abcdefgh.supabase.co"
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwdXZ2cnllb3J1Y2x4b2J3emhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYwMzgyODMsImV4cCI6MjEwMTYxNDI4M30.WpeOJDKBvAijgU1zMyJ2ZmVVJnT8vcow-k0fHfk7cfs";
+  // =============================================================================
+
+  const supabaseClient = (SUPABASE_URL.startsWith("http") && window.supabase)
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+
+  // ====== TOMTOM SETUP (optional) — leave as-is to keep using free OpenStreetMap/Esri tiles ======
+  // Get a free key at https://developer.tomtom.com — Dashboard > API Keys.
+  // Once set, both Street and Satellite views switch to TomTom automatically.
+  const TOMTOM_API_KEY = "OCcI56rEYOSltBlxYFWoXb2r9uH4Nqzw";
+  const hasTomTom = !!(TOMTOM_API_KEY && TOMTOM_API_KEY !== "YOUR_TOMTOM_API_KEY");
+  // ==================================================================================================
+
+  let profiles = {};   // id -> profile row
+  let me = null;       // my profile
+  let pins = {};       // door id -> {lat,lng,address,created_by,logs:[{id,member_id,member,status,notes,timestamp}]}
+  let map, markers = {};
+  let currentUser = null;
+  let selectedNewStatus = "talked";
+  let pendingLatLng = null;
+  let activePinId = null;
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- Toast / confirm (in-page, since native alert/confirm may be blocked in this sandbox) ----------
+  function showToast(message, type, duration){
+    type = type || "info";
+    duration = duration || 5500;
+    const container = $("toastContainer");
+    const toast = document.createElement("div");
+    toast.className = "toast " + type;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("show"));
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+
+  function showConfirm(message){
+    return new Promise((resolve) => {
+      $("confirmMessage").textContent = message;
+      $("confirmModal").classList.add("open");
+      const yesBtn = $("confirmYesBtn");
+      const noBtn = $("confirmNoBtn");
+      function cleanup(result){
+        $("confirmModal").classList.remove("open");
+        yesBtn.removeEventListener("click", onYes);
+        noBtn.removeEventListener("click", onNo);
+        resolve(result);
+      }
+      function onYes(){ cleanup(true); }
+      function onNo(){ cleanup(false); }
+      yesBtn.addEventListener("click", onYes);
+      noBtn.addEventListener("click", onNo);
+    });
+  }
+
+  // ---------- Data (one row per door, one row per visit) ----------
+  function nameFor(memberId, fallback){
+    const p = memberId && profiles[memberId];
+    return p ? (p.full_name || p.email) : (fallback || "Unknown");
+  }
+  function isManager(){ return !!me && (me.role === "admin" || me.role === "dispatch"); }
+  function memberNames(){
+    const s = new Set(Object.values(profiles).filter(p => p.active).map(p => p.full_name || p.email));
+    Object.values(pins).forEach(p => (p.logs || []).forEach(l => s.add(l.member)));
+    return [...s].sort();
+  }
+  function dbError(e, what){
+    console.error(what, e);
+    showToast("Couldn't " + what + ": " + (e && e.message ? e.message : "check your connection and try again."), "error", 8000);
+  }
+
+  async function fetchAll(table, columns, order){
+    const out = [];
+    const size = 1000;
+    for(let from = 0; ; from += size){
+      const { data, error } = await supabaseClient.from(table).select(columns).order(order, { ascending:true }).range(from, from + size - 1);
+      if(error) throw error;
+      out.push(...data);
+      if(data.length < size) break;
+    }
+    return out;
+  }
+
+  async function loadProfiles(){
+    const { data, error } = await supabaseClient.from("profiles").select("id,email,full_name,legacy_name,role,active,must_change_password");
+    if(error) throw error;
+    profiles = {};
+    data.forEach(p => { profiles[p.id] = p; });
+  }
+
+  async function loadPins(){
+    try{
+      const [doors, visits] = await Promise.all([
+        fetchAll("doors", "id,lat,lng,address,created_by,home_id", "created_at"),
+        fetchAll("visits", "id,door_id,member_id,member_name,status,notes,visited_at,homeowner_name,phone,email,follow_at,lead_pm", "visited_at")
+      ]);
+      const next = {};
+      doors.forEach(d => { next[d.id] = { lat:d.lat, lng:d.lng, address:d.address, created_by:d.created_by, home_id:d.home_id || null, logs:[] }; });
+      visits.forEach(v => {
+        const pin = next[v.door_id];
+        if(!pin) return;
+        pin.logs.push({ id:v.id, member_id:v.member_id, member:nameFor(v.member_id, v.member_name), status:v.status, notes:v.notes || "", timestamp:new Date(v.visited_at).getTime(),
+          homeowner_name:v.homeowner_name || "", phone:v.phone || "", email:v.email || "", follow_at:v.follow_at || null, lead_pm:v.lead_pm || "" });
+      });
+      pins = next;
+    }catch(e){
+      dbError(e, "load the team map");
+    }
+  }
+
+  function redrawAllMarkers(){
+    if(!map) return;
+    Object.keys(markers).forEach(id => { map.removeLayer(markers[id]); });
+    markers = {};
+    Object.keys(pins).forEach(id => addMarkerForPin(id));
+    renderStatusControls();
+  }
+
+  async function refreshData(){
+    if($("sidePanel").classList.contains("open") || $("newPinModal").classList.contains("open")) return;
+    await loadPins();
+    redrawAllMarkers();
+    await loadDispatch();
+  }
+
+  // ---------- Sign in ----------
+  function showLoginError(msg){
+    const el = $("loginError");
+    el.textContent = msg || "";
+    el.style.display = msg ? "block" : "none";
+  }
+  function showSignInForm(){
+    $("signInForm").style.display = "block";
+    $("changePassForm").style.display = "none";
+    $("loginSub").textContent = "Sign in with your email and password.";
+  }
+  let passChangeOptional = false;
+  function showChangePassForm(first){
+    passChangeOptional = !first;
+    $("cancelChangeBtn").textContent = first ? "Sign out" : "Cancel";
+    $("signInForm").style.display = "none";
+    $("changePassForm").style.display = "block";
+    $("loginSub").textContent = first ? "Welcome! Pick your own password before you start." : "Pick a new password.";
+    $("newPass1").value = "";
+    $("newPass2").value = "";
+  }
+  function showLoginScreen(){
+    $("app").style.display = "none";
+    $("loginScreen").style.display = "flex";
+  }
+
+  async function afterAuth(){
+    const res = await supabaseClient.auth.getUser();
+    const user = res && res.data ? res.data.user : null;
+    if(!user){ showLoginScreen(); showSignInForm(); return; }
+    try{ await loadProfiles(); }catch(e){ dbError(e, "load the team"); }
+    me = profiles[user.id] || null;
+    if(!me || !me.active){
+      await supabaseClient.auth.signOut();
+      me = null;
+      showLoginScreen(); showSignInForm();
+      showLoginError("Your account isn't turned on yet. Ask an admin to turn it on.");
+      return;
+    }
+    if(me.must_change_password){ showLoginScreen(); showChangePassForm(true); return; }
+    currentUser = me.full_name || me.email;
+    showLoginError("");
+    $("loginScreen").style.display = "none";
+    $("app").style.display = "flex";
+    $("whoLabel").textContent = "Signed in as " + currentUser;
+    await loadPins();
+    initApp();
+    redrawAllMarkers();
+    await loadDispatch();
+    showDispatchTab();
+    document.querySelector('.tab-btn[data-tab="map"]').click();
+  }
+
+  $("loginBtn").addEventListener("click", async () => {
+    const email = $("emailInput").value.trim().toLowerCase();
+    const password = $("passInput").value;
+    if(!email || !password){ showLoginError("Enter your email and password."); return; }
+    $("loginBtn").disabled = true;
+    $("loginBtn").textContent = "Signing in…";
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    $("loginBtn").disabled = false;
+    $("loginBtn").textContent = "Sign in";
+    if(error){ showLoginError("That email and password didn't match. Try again, or ask an admin to reset it."); return; }
+    $("passInput").value = "";
+    await afterAuth();
+  });
+  $("passInput").addEventListener("keydown", e => { if(e.key === "Enter") $("loginBtn").click(); });
+
+  $("setNewPassBtn").addEventListener("click", async () => {
+    const a = $("newPass1").value, b = $("newPass2").value;
+    if(a.length < 8){ showLoginError("Use at least 8 characters."); return; }
+    if(a !== b){ showLoginError("The two passwords don't match."); return; }
+    $("setNewPassBtn").disabled = true;
+    const { error } = await supabaseClient.auth.updateUser({ password: a });
+    if(error){ $("setNewPassBtn").disabled = false; showLoginError("Couldn't save your password: " + error.message); return; }
+    const r = await supabaseClient.rpc("password_changed");
+    $("setNewPassBtn").disabled = false;
+    if(r.error){ showLoginError("Your password was saved, but setup didn't finish: " + r.error.message); return; }
+    showLoginError("");
+    showToast("Password saved.", "success", 3000);
+    showSignInForm();
+    await afterAuth();
+  });
+  $("cancelChangeBtn").addEventListener("click", async () => {
+    if(passChangeOptional && me){
+      passChangeOptional = false;
+      showLoginError("");
+      showSignInForm();
+      $("loginScreen").style.display = "none";
+      $("app").style.display = "flex";
+      return;
+    }
+    await supabaseClient.auth.signOut();
+    me = null;
+    showLoginError("");
+    showSignInForm();
+  });
+
+  $("logoutBtn").addEventListener("click", async () => {
+    stopLiveLocationTracking();
+    await supabaseClient.auth.signOut();
+    currentUser = null;
+    me = null;
+    showDispatchTab();
+    showLoginScreen();
+    showSignInForm();
+    showLoginError("");
+    $("passInput").value = "";
+  });
+
+  // ---------- Tabs ----------
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const tab = btn.dataset.tab;
+      $("mapView").style.display = tab === "map" ? "flex" : "none";
+      $("listView").classList.toggle("open", tab === "list");
+      $("statsView").classList.toggle("open", tab === "stats");
+      $("teamView").classList.toggle("open", tab === "team");
+      $("mineView").classList.toggle("open", tab === "mine");
+      $("dispatchView").classList.toggle("open", tab === "dispatch");
+      if(tab === "list") renderList();
+      if(tab === "stats") renderStats();
+      if(tab === "team") renderTeam();
+      if(tab === "mine") renderMine();
+      if(tab === "dispatch") renderDispatch();
+      if(tab === "map" && map) setTimeout(() => map.invalidateSize(), 50);
+    });
+  });
+
+  // ---------- Map ----------
+  let userLocationMarker = null;
+  let watchId = null;
+  let hasAutoCenteredOnUser = false;
+
+  function makeUserIcon(){
+    return L.divIcon({
+      className: "",
+      html: `<div class="user-dot-outer"><div class="user-dot-inner"></div></div>`,
+      iconSize:[20,20], iconAnchor:[10,10]
+    });
+  }
+
+  function startLiveLocationTracking(showErrors){
+    if(!navigator.geolocation){
+      if(showErrors) showToast("This browser doesn't support location services.", "error");
+      return;
+    }
+    if(watchId !== null) return; // already tracking
+    $("locateBtn").classList.add("tracking");
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const latlng = [pos.coords.latitude, pos.coords.longitude];
+        if(!userLocationMarker){
+          userLocationMarker = L.marker(latlng, { icon: makeUserIcon(), zIndexOffset: 1000, interactive:false }).addTo(map);
+        } else {
+          userLocationMarker.setLatLng(latlng);
+        }
+        if(!hasAutoCenteredOnUser){
+          hasAutoCenteredOnUser = true;
+          map.setView(latlng, 17);
+          if(showErrors) showToast("Location found.", "success", 2500);
+        }
+      },
+      (err) => {
+        console.warn("Live location unavailable:", err.code, err.message);
+        // Reset tracking state fully so the button can retry cleanly instead of going silent
+        if(watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+        $("locateBtn").classList.remove("tracking");
+        if(showErrors){
+          let msg = "Couldn't get your location.";
+          if(err.code === 1) msg = "Location permission looks blocked for this page. Check your browser's site settings, allow location, then tap the pin button again.";
+          else if(err.code === 2) msg = "Your location isn't available right now — try again once you have a clearer signal.";
+          else if(err.code === 3) msg = "Location took too long to respond. Tap the pin button to try again.";
+          showToast(msg, "error", 9000);
+        }
+      },
+      { enableHighAccuracy:true, maximumAge:5000, timeout:15000 }
+    );
+  }
+
+  function stopLiveLocationTracking(){
+    if(watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+    if(userLocationMarker){ map.removeLayer(userLocationMarker); userLocationMarker = null; }
+    hasAutoCenteredOnUser = false;
+    $("locateBtn").classList.remove("tracking");
+  }
+
+  function initMap(){
+    if(map){ map.invalidateSize(); return; } // guard against re-init on repeated logins
+
+    map = L.map("map", { zoomControl:true, tap:true }).setView(DEFAULT_CENTER, 13);
+
+    // Free fallback sources — always available regardless of TomTom config
+    const osmStreet = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom:19,
+      attribution:'&copy; OpenStreetMap contributors'
+    });
+    const esriImagery = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom:19, attribution:'Tiles &copy; Esri' }
+    );
+    const esriLabels = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom:19, attribution:'' }
+    );
+    const esriSatellite = L.layerGroup([esriImagery, esriLabels]);
+
+    // Street uses OpenStreetMap — reliably renders building outlines at zoom, unlike TomTom's basic style.
+    const streetLayer = osmStreet;
+    const satelliteLayer = esriSatellite;
+
+    streetLayer.addTo(map);
+
+    function updateSourceLabel(){
+      const label = $("mapSourceLabel");
+      let text;
+      if(map.hasLayer(osmStreet)) text = "Map: OpenStreetMap";
+      else if(map.hasLayer(esriSatellite)) text = "Map: Esri (Satellite)";
+      else text = "Map: —";
+      label.textContent = text;
+    }
+    updateSourceLabel();
+    map.on("baselayerchange", updateSourceLabel);
+
+    const layersControl = L.control.layers(
+      { "Street": streetLayer, "Satellite": satelliteLayer },
+      null,
+      { position:"topright", collapsed:true }
+    ).addTo(map);
+
+    // Protect against the Esri satellite source failing
+    {
+      let satelliteFailCount = 0;
+      let satelliteWarned = false;
+      esriImagery.on("tileerror", () => {
+        satelliteFailCount++;
+        if(satelliteFailCount >= 3 && !satelliteWarned && map.hasLayer(esriSatellite)){
+          satelliteWarned = true;
+          map.removeLayer(esriSatellite);
+          streetLayer.addTo(map);
+          showToast("Satellite imagery couldn't load, so we've switched back to street view.", "error", 7000);
+          updateSourceLabel();
+        }
+      });
+    }
+
+
+    map.on("click", (e) => {
+      pendingLatLng = e.latlng;
+      openNewPinModal();
+      const near = nearestDoor(e.latlng.lat, e.latlng.lng, 15);
+      if(near) showDupBox(near, "You tapped right next to a house that's already logged.");
+      lookupAddressForModal(e.latlng);
+    });
+    $("pinAddress").addEventListener("change", checkAddressDup);
+
+    Object.keys(pins).forEach(id => addMarkerForPin(id));
+
+    const hint = $("hint");
+    hint.classList.add("show");
+    setTimeout(() => hint.classList.remove("show"), 3500);
+
+    $("legendToggle").addEventListener("click", () => {
+      $("legend").classList.toggle("open");
+    });
+    wireStatusControls();
+
+    // Start tracking automatically so the map centers on you and follows
+    // your position as you walk your route. Silent — no alert if it fails on load.
+    startLiveLocationTracking(false);
+
+    $("locateBtn").addEventListener("click", () => {
+      if(!navigator.geolocation){ showToast("Location isn't available in this browser.", "error"); return; }
+      if(userLocationMarker && watchId !== null){
+        map.setView(userLocationMarker.getLatLng(), 17);
+        return;
+      }
+      hasAutoCenteredOnUser = false; // force a re-center once tracking resumes
+      startLiveLocationTracking(true); // user tapped it — show errors if it fails
+    });
+  }
+
+  function statusOfLatestLog(pin){
+    if(!pin.logs || pin.logs.length === 0) return "nothome";
+    return pin.logs[pin.logs.length-1].status;
+  }
+
+  function makeIcon(statusKey){
+    const hex = STATUS_META[statusKey] ? STATUS_META[statusKey].hex : "#888";
+    return L.divIcon({
+      className: "",
+      html: `<div style="width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+              background:${hex};border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4);"></div>`,
+      iconSize:[22,22], iconAnchor:[11,22]
+    });
+  }
+
+  // ---------- Status filter (legend on desktop, chip bar on phones) ----------
+  var statusShow = null;
+  const STATUS_SHORT = { talked:"Talked", appointment:"Appt", nothome:"Not home", callback:"Callback", notinterested:"Not interested", sold:"Sold" };
+  function statusSet(){
+    if(statusShow) return statusShow;
+    try{
+      const v = JSON.parse(localStorage.getItem("canvassStatusShow") || "null");
+      if(Array.isArray(v)){ const s = new Set(v.filter(k => STATUS_META[k])); if(s.size) return (statusShow = s); }
+    }catch(e){}
+    return (statusShow = new Set(Object.keys(STATUS_META)));
+  }
+  function allStatusesOn(){ const s = statusSet(); return Object.keys(STATUS_META).every(k => s.has(k)); }
+  function tapStatus(k){
+    const s = statusSet();
+    if(allStatusesOn()) statusShow = new Set([k]);
+    else if(s.has(k)){ s.delete(k); if(!s.size) statusShow = new Set(Object.keys(STATUS_META)); }
+    else s.add(k);
+    applyStatusFilter();
+  }
+  function showAllStatuses(){ statusShow = new Set(Object.keys(STATUS_META)); applyStatusFilter(); }
+  function applyStatusFilter(){
+    try{ localStorage.setItem("canvassStatusShow", JSON.stringify([...statusSet()])); }catch(e){}
+    redrawAllMarkers();
+  }
+  function renderStatusControls(){
+    const s = statusSet(), all = allStatusesOn(), counts = {};
+    Object.keys(STATUS_META).forEach(k => { counts[k] = 0; });
+    Object.values(pins).forEach(p => { const st = statusOfLatestLog(p); if(counts[st] != null) counts[st]++; });
+    const rows = $("legendRows");
+    if(rows) rows.innerHTML = Object.keys(STATUS_META).map(k =>
+      '<div class="lg-row' + (s.has(k) ? '' : ' off') + '" data-st="' + k + '"><span class="dot" style="background:' + STATUS_META[k].hex + '"></span>' + STATUS_META[k].label + '<span class="lg-n">' + counts[k] + '</span></div>').join("");
+    const lgAll = $("lgAll"); if(lgAll) lgAll.style.display = all ? "none" : "";
+    const bar = $("statusBar");
+    if(bar) bar.innerHTML = (all ? '' : '<button type="button" class="st-chip all" data-st="__all">Show all</button>') +
+      Object.keys(STATUS_META).map(k => '<button type="button" class="st-chip' + (s.has(k) ? (all ? '' : ' only') : ' off') + '" data-st="' + k + '"><span class="dot" style="background:' + STATUS_META[k].hex + '"></span>' + STATUS_SHORT[k] + ' ' + counts[k] + '</button>').join("");
+  }
+  function wireStatusControls(){
+    const handler = e => {
+      const el = e.target.closest("[data-st]");
+      if(!el) return;
+      e.preventDefault(); e.stopPropagation();
+      if(el.dataset.st === "__all") showAllStatuses(); else tapStatus(el.dataset.st);
+    };
+    const rows = $("legendRows"); if(rows) rows.addEventListener("click", handler);
+    const bar = $("statusBar"); if(bar) bar.addEventListener("click", handler);
+    const lgAll = $("lgAll"); if(lgAll) lgAll.addEventListener("click", e => { e.preventDefault(); showAllStatuses(); });
+    renderStatusControls();
+  }
+
+  function addMarkerForPin(id){
+    const pin = pins[id];
+    if(!pin) return;
+    const status = statusOfLatestLog(pin);
+    if(!statusSet().has(status)) return;
+    const marker = L.marker([pin.lat, pin.lng], { icon: makeIcon(status) }).addTo(map);
+    marker.on("click", () => openSidePanel(id));
+    markers[id] = marker;
+  }
+
+  function refreshMarker(id){
+    if(markers[id]){ map.removeLayer(markers[id]); delete markers[id]; }
+    addMarkerForPin(id);
+    renderStatusControls();
+  }
+
+  // ---------- Reverse geocoding ----------
+  async function reverseGeocodeTomTom(lat, lng){
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const url = `https://api.tomtom.com/search/2/reverseGeocode/${lat},${lng}.json?key=${TOMTOM_API_KEY}&radius=75`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if(!res.ok) return null;
+    const data = await res.json();
+    const entry = data && data.addresses && data.addresses[0];
+    const addr = entry && entry.address;
+    if(!addr) return null;
+    if(addr.streetNumber && addr.streetName) return `${addr.streetNumber} ${addr.streetName}`;
+    if(addr.freeformAddress) return addr.freeformAddress.split(",")[0];
+    return null;
+  }
+
+  async function reverseGeocodeNominatim(lat, lng){
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`;
+    const res = await fetch(url, { signal: controller.signal, headers: { "Accept": "application/json" } });
+    clearTimeout(timeoutId);
+    if(!res.ok) return null;
+    const data = await res.json();
+    if(data && data.address){
+      const a = data.address;
+      const houseNum = a.house_number || "";
+      const road = a.road || a.pedestrian || a.residential || a.footway || "";
+      const combined = [houseNum, road].filter(Boolean).join(" ");
+      if(combined) return combined;
+    }
+    if(data && data.display_name) return data.display_name.split(",")[0];
+    return null;
+  }
+
+  async function reverseGeocode(lat, lng){
+    // TomTom's US address-point data is generally more accurate than OSM's in
+    // suburban/residential areas, so try it first when a key is configured.
+    if(hasTomTom){
+      try{
+        const result = await reverseGeocodeTomTom(lat, lng);
+        if(result) return result;
+      }catch(e){ /* fall through to Nominatim */ }
+    }
+    try{
+      return await reverseGeocodeNominatim(lat, lng);
+    }catch(e){
+      return null; // sandbox may block this — caller falls back to manual entry
+    }
+  }
+
+  // ---------- New pin modal ----------
+  function renderStatusGrid(container, selected, onPick){
+    container.innerHTML = "";
+    Object.keys(STATUS_META).forEach(key => {
+      const meta = STATUS_META[key];
+      const div = document.createElement("div");
+      div.className = "status-opt" + (key === selected ? " selected" : "");
+      div.innerHTML = `<span class="dot" style="background:${meta.hex}"></span>${meta.label}`;
+      div.addEventListener("click", () => onPick(key));
+      container.appendChild(div);
+    });
+  }
+
+  // ---------- Lead card (Appointment and Callback) ----------
+  const LEAD_STATUSES = { appointment:"Appointment", callback:"Call back" };
+  function leadCardHtml(pfx){
+    return '<div class="lc-title" id="' + pfx + 'LcTitle">Lead card</div>' +
+      '<label for="' + pfx + 'Name">Homeowner name</label><input type="text" id="' + pfx + 'Name" autocomplete="off">' +
+      '<label for="' + pfx + 'Phone">Phone</label><input type="tel" id="' + pfx + 'Phone" inputmode="tel" autocomplete="off">' +
+      '<label for="' + pfx + 'Email">Email</label><input type="email" id="' + pfx + 'Email" inputmode="email" autocomplete="off" autocapitalize="off">' +
+      '<label for="' + pfx + 'When" id="' + pfx + 'WhenLbl">Date and time</label><input type="datetime-local" id="' + pfx + 'When">' +
+      '<label for="' + pfx + 'Pm">PM assigned</label><select id="' + pfx + 'Pm"><option value="">Not assigned yet</option>' + PM_NAMES.map(p => '<option>' + escapeHtml(p) + '</option>').join("") + '</select>';
+  }
+  function syncLeadCard(pfx, status){
+    const box = $(pfx + "LeadCard");
+    if(!box) return;
+    const on = !!LEAD_STATUSES[status];
+    box.classList.toggle("show", on);
+    if(on){
+      $(pfx + "LcTitle").textContent = status === "appointment" ? "Appointment details" : "Call-back details";
+      $(pfx + "WhenLbl").textContent = status === "appointment" ? "Appointment date and time" : "Call back on";
+    }
+  }
+  function readLeadCard(pfx, status){
+    if(!LEAD_STATUSES[status] || !$(pfx + "Name")) return {};
+    const when = $(pfx + "When").value;
+    return { homeowner_name:$(pfx + "Name").value.trim(), phone:$(pfx + "Phone").value.trim(), email:$(pfx + "Email").value.trim(),
+      follow_at: when ? new Date(when).toISOString() : null, lead_pm:$(pfx + "Pm").value };
+  }
+  function clearLeadCard(pfx){
+    ["Name","Phone","Email","When"].forEach(k => { const el = $(pfx + k); if(el) el.value = ""; });
+    const pm = $(pfx + "Pm"); if(pm) pm.value = "";
+  }
+  function fmtWhen(ts){
+    const d = new Date(ts);
+    return d.toLocaleDateString([], { weekday:"short", month:"numeric", day:"numeric" }) + " " + d.toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
+  }
+  function leadLineHtml(l){
+    if(!l || !(l.homeowner_name || l.phone || l.email || l.follow_at || l.lead_pm)) return "";
+    const parts = [];
+    if(l.homeowner_name) parts.push("<b>" + escapeHtml(l.homeowner_name) + "</b>");
+    if(l.phone) parts.push('<a href="tel:' + escapeHtml(l.phone.replace(/[^0-9+]/g, "")) + '">' + escapeHtml(l.phone) + '</a>');
+    if(l.email) parts.push('<a href="mailto:' + escapeHtml(l.email) + '">' + escapeHtml(l.email) + '</a>');
+    if(l.follow_at) parts.push((l.status === "callback" ? "Call back " : "Appointment ") + escapeHtml(fmtWhen(l.follow_at)));
+    if(l.lead_pm) parts.push("PM " + escapeHtml(l.lead_pm));
+    return '<div class="lead-line">' + parts.join(" · ") + '</div>';
+  }
+
+  // ---------- Duplicate-door check and hail-list links ----------
+  let pendingHomeId = null, dupDoorId = null, dupDismissed = {}, panelLinkHome = null;
+  function metersBetween(a, b, c, d){ return milesBetween(a, b, c, d) * 1609.34; }
+  function nearestDoor(lat, lng, maxM){
+    let best = null, bd = maxM;
+    Object.keys(pins).forEach(id => { const p = pins[id]; const m = metersBetween(lat, lng, p.lat, p.lng); if(m <= bd){ bd = m; best = id; } });
+    return best;
+  }
+  function doorByAddress(addr, lat, lng){
+    const k = normAddr(addr);
+    if(!k || /^dropped pin/.test(k)) return null;
+    let best = null, bd = 300;
+    Object.keys(pins).forEach(id => { const p = pins[id]; if(normAddr(p.address) !== k) return; const m = metersBetween(lat, lng, p.lat, p.lng); if(m < bd){ bd = m; best = id; } });
+    return best;
+  }
+  function showDupBox(id, why){
+    const p = pins[id], box = $("pinDupBox");
+    if(!p || !box) return;
+    const last = p.logs[p.logs.length - 1], meta = last && STATUS_META[last.status];
+    box.innerHTML = escapeHtml(why) + '<br><b>' + escapeHtml(p.address) + '</b> · ' + p.logs.length + ' visit' + (p.logs.length === 1 ? '' : 's') + (meta ? ' · last: ' + meta.label : '') +
+      '<div class="dup-actions"><button type="button" id="dupUseBtn" style="background:var(--olive);color:var(--paper)">Add a visit to this house</button>' +
+      '<button type="button" id="dupNewBtn" style="background:#fff;color:var(--olive);border:1px solid var(--line)">It\'s a different house</button></div>';
+    box.classList.add("show");
+    $("dupUseBtn").addEventListener("click", () => {
+      dupDoorId = id;
+      $("pinAddress").value = p.address;
+      $("pinAddress").disabled = true;
+      box.innerHTML = 'This visit will be added to <b>' + escapeHtml(p.address) + '</b>. <button type="button" class="le-edit-btn" id="dupUndoBtn">Undo</button>';
+      $("dupUndoBtn").addEventListener("click", () => { dupDoorId = null; $("pinAddress").disabled = false; showDupBox(id, why); });
+    });
+    $("dupNewBtn").addEventListener("click", () => { dupDoorId = null; dupDismissed[id] = true; box.classList.remove("show"); box.innerHTML = ""; });
+  }
+  function hideDupBox(){ const box = $("pinDupBox"); if(box){ box.classList.remove("show"); box.innerHTML = ""; } }
+  function checkAddressDup(){
+    if(dupDoorId || !pendingLatLng) return;
+    const hit = doorByAddress($("pinAddress").value, pendingLatLng.lat, pendingLatLng.lng);
+    if(hit && !dupDismissed[hit]) showDupBox(hit, "This address is already logged nearby.");
+  }
+
+  // Which logged door, if any, belongs to a hail-list home: a linked door first, then the same address close by.
+  function doorIndex(){
+    const byHome = {}, byAddr = {};
+    Object.keys(pins).forEach(id => {
+      const p = pins[id];
+      if(!p.logs || !p.logs.length) return;
+      if(p.home_id) byHome[p.home_id] = id;
+      const k = normAddr(p.address);
+      (byAddr[k] = byAddr[k] || []).push(id);
+    });
+    return { byHome, byAddr };
+  }
+  function knockedDoorFor(hm, idx, nb){
+    if(idx.byHome[hm.id]) return idx.byHome[hm.id];
+    const c = idx.byAddr[normAddr(hm.address)];
+    if(!c) return null;
+    let best = null, bd = Infinity;
+    c.forEach(id => {
+      const p = pins[id];
+      const m = hm.lat != null ? metersBetween(hm.lat, hm.lng, p.lat, p.lng) : (nb && nb.lat != null ? metersBetween(nb.lat, nb.lng, p.lat, p.lng) / 20 : 0);
+      if(m < bd){ bd = m; best = id; }
+    });
+    return bd <= 300 ? best : null;
+  }
+  let nbHomesCache = {};
+  async function loadNbHomes(nbId){
+    if(nbHomesCache[nbId]) return nbHomesCache[nbId];
+    const out = [];
+    for(let from = 0; ; from += 1000){
+      const r = await supabaseClient.from("homes").select("id,street_id,address,lat,lng").eq("neighborhood_id", nbId).order("id").range(from, from + 999);
+      if(r.error) throw r.error;
+      out.push(...r.data);
+      if(r.data.length < 1000) break;
+    }
+    nbHomesCache[nbId] = out;
+    return out;
+  }
+  async function fillCoverage(root, n){
+    const box = root.querySelector("#nbCoverage");
+    let homes;
+    try{ homes = await loadNbHomes(n.id); }
+    catch(e){ if(box) box.innerHTML = '<div class="num">—</div><div class="lbl">Coverage unavailable</div>'; return; }
+    if(!root.isConnected) return;
+    const idx = doorIndex(), per = {};
+    let knocked = 0, appts = 0;
+    homes.forEach(hm => {
+      const c = per[hm.street_id] = per[hm.street_id] || { homes:0, knocked:0 };
+      c.homes++;
+      const d = knockedDoorFor(hm, idx, n);
+      if(d){ c.knocked++; knocked++; if(pins[d].logs.some(l => l.status === "appointment")) appts++; }
+    });
+    const pct = homes.length ? Math.round(knocked * 100 / homes.length) : 0;
+    if(box) box.innerHTML = '<div class="num">' + pct + '%</div><div class="lbl">Coverage · ' + fmtN(knocked) + ' of ' + fmtN(homes.length) + ' homes knocked</div><div class="cov-bar"><span style="width:' + pct + '%"></span></div>';
+    const ap = root.querySelector("#nbAppts");
+    if(ap) ap.innerHTML = '<div class="num">' + appts + '</div><div class="lbl">Appointments on this list</div>';
+    root.querySelectorAll(".cov-cell").forEach(td => {
+      const c = per[td.dataset.sid] || { homes:0, knocked:0 }, p = c.homes ? Math.round(c.knocked * 100 / c.homes) : 0;
+      td.innerHTML = c.knocked + '/' + c.homes + ' <span class="le-meta">' + p + '%</span><div class="cov-bar"><span style="width:' + p + '%"></span></div>';
+    });
+  }
+  function openDoorOnMap(id){
+    const p = pins[id];
+    if(!p) return;
+    document.querySelector('.tab-btn[data-tab="map"]').click();
+    setTimeout(() => { map.setView([p.lat, p.lng], Math.max(map.getZoom(), 18)); openSidePanel(id); }, 120);
+  }
+  function logFromHome(hm, sid){
+    if(!hm) return;
+    const n = streetById[sid] ? nbById[streetById[sid].neighborhood_id] : null;
+    const existing = knockedDoorFor(hm, doorIndex(), n);
+    if(existing){ panelLinkHome = { door: existing, home: hm.id }; openDoorOnMap(existing); return; }
+    document.querySelector('.tab-btn[data-tab="map"]').click();
+    setTimeout(() => {
+      if(hm.lat == null){ showToast("This home has no map location yet. Tap the house on the map to log it.", "error", 6000); return; }
+      map.setView([hm.lat, hm.lng], Math.max(map.getZoom(), 18));
+      pendingLatLng = L.latLng(hm.lat, hm.lng);
+      openNewPinModal();
+      pendingHomeId = hm.id;
+      $("pinAddress").value = hm.address;
+      const fl = $("pinFromList");
+      fl.innerHTML = 'From the hail list' + (hm.owner ? ' · owner ' + escapeHtml(hm.owner) : '') + (hm.hail != null ? ' · hail ' + Number(hm.hail).toFixed(2) + '"' : '') + (hm.built ? ' · built ' + escapeHtml(hm.built) : '');
+      fl.classList.add("show");
+    }, 120);
+  }
+
+  function openNewPinModal(){
+    $("pinAddress").value = "";
+    $("pinAddress").placeholder = "123 Clairemont Dr";
+    $("pinAddress").disabled = false;
+    $("pinNotes").value = "";
+    pendingHomeId = null; dupDoorId = null; dupDismissed = {};
+    hideDupBox();
+    $("pinFromList").classList.remove("show");
+    if(!$("pinName")) $("pinLeadCard").innerHTML = leadCardHtml("pin");
+    clearLeadCard("pin");
+    syncLeadCard("pin", "talked");
+    setPinSaveError("");
+    $("savePinBtn").disabled = false;
+    $("savePinBtn").textContent = "Save entry";
+    selectedNewStatus = "talked";
+    renderStatusGrid($("newPinStatusGrid"), selectedNewStatus, pickNewStatus);
+    $("newPinModal").classList.add("open");
+    $("pinAddress").focus();
+  }
+  function setPinSaveError(msg){
+    const el = $("pinSaveError");
+    if(!el) return;
+    el.textContent = msg || "";
+    el.style.display = msg ? "block" : "none";
+  }
+  function pickNewStatus(key){
+    selectedNewStatus = key;
+    renderStatusGrid($("newPinStatusGrid"), selectedNewStatus, pickNewStatus);
+    syncLeadCard("pin", key);
+  }
+
+  let pendingLookupPromise = null;
+
+  async function lookupAddressForModal(latlng){
+    const field = $("pinAddress");
+    field.disabled = true;
+    field.placeholder = "Looking up address…";
+    const promise = reverseGeocode(latlng.lat, latlng.lng).then(addr => {
+      // Bail out quietly if the pin was cancelled or a different one opened meanwhile
+      if(!pendingLatLng || pendingLatLng.lat !== latlng.lat || pendingLatLng.lng !== latlng.lng) return;
+      field.disabled = false;
+      field.placeholder = "123 Clairemont Dr";
+      if(addr && !field.value){ field.value = addr; }
+      if(dupDoorId) field.disabled = true; else checkAddressDup();
+    }).catch(() => {
+      field.disabled = false;
+      field.placeholder = "123 Clairemont Dr";
+    });
+    pendingLookupPromise = promise;
+    await promise;
+    if(pendingLookupPromise === promise) pendingLookupPromise = null;
+  }
+
+  $("cancelPinBtn").addEventListener("click", () => {
+    $("newPinModal").classList.remove("open");
+    pendingLatLng = null;
+    pendingLookupPromise = null;
+  });
+
+  $("savePinBtn").addEventListener("click", async () => {
+    if(!pendingLatLng) return;
+    // If an address lookup is still running, wait for it so we never save before it lands
+    if(pendingLookupPromise){
+      $("savePinBtn").disabled = true;
+      $("savePinBtn").textContent = "Finishing lookup…";
+      try{ await pendingLookupPromise; }catch(e){}
+      $("savePinBtn").disabled = false;
+      $("savePinBtn").textContent = "Save entry";
+    }
+    const address = $("pinAddress").value.trim() || `Dropped pin (${pendingLatLng.lat.toFixed(5)}, ${pendingLatLng.lng.toFixed(5)})`;
+    const notes = $("pinNotes").value.trim();
+    const latlng = pendingLatLng;
+    const status = selectedNewStatus;
+    const btn = $("savePinBtn");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    setPinSaveError("");
+    let saved = false;
+    try{
+      // One database step: a new door and its first visit together, or a visit on the matched door.
+      const lead = readLeadCard("pin", status);
+      const r = await supabaseClient.rpc("log_door_visit", { p: Object.assign({ status, notes, lat: latlng.lat, lng: latlng.lng, address,
+        home_id: pendingHomeId || "", door_id: dupDoorId || "" }, lead) });
+      if(r.error) throw r.error;
+      const id = r.data.door_id;
+      const entry = Object.assign({ id: r.data.visit_id, member_id: me && me.id, member: currentUser, status, notes, timestamp: new Date(r.data.visited_at).getTime(),
+        homeowner_name:"", phone:"", email:"", follow_at:null, lead_pm:"" }, lead);
+      if(r.data.new_door || !pins[id]){
+        pins[id] = { lat: latlng.lat, lng: latlng.lng, address, created_by: me && me.id, home_id: pendingHomeId || null, logs: [entry] };
+        addMarkerForPin(id);
+      } else {
+        pins[id].logs.push(entry);
+        if(pendingHomeId && !pins[id].home_id) pins[id].home_id = pendingHomeId;
+        refreshMarker(id);
+      }
+      renderStatusControls();
+      pendingHomeId = null; dupDoorId = null;
+      saved = true;
+      $("newPinModal").classList.remove("open");
+      if(pendingLatLng === latlng) pendingLatLng = null;
+      showToast("Visit logged.", "success", 2500);
+    }catch(e){
+      console.error("save this visit", e);
+      // Keep the form open with everything still filled in so nothing is lost.
+      setPinSaveError("Not saved yet: " + (e && e.message ? e.message : "no connection") + ". Your entry is still here. Tap Retry when you have signal.");
+    }finally{
+      btn.disabled = false;
+      btn.textContent = saved ? "Save entry" : "Retry";
+    }
+  });
+
+  // ---------- Side panel ----------
+  function openSidePanel(id, editingIndex, editingAddress){
+    if(editingIndex === undefined) editingIndex = null;
+    if(editingAddress === undefined) editingAddress = false;
+    activePinId = id;
+    if(panelLinkHome && panelLinkHome.door !== id) panelLinkHome = null;
+    const pin = pins[id];
+    if(!pin) return;
+    const panel = $("sidePanel");
+    panel.classList.add("open");
+
+    const withIndex = pin.logs.map((log, i) => ({ ...log, origIndex: i }));
+    const reversedLogs = withIndex.slice().reverse();
+
+    const logsHtml = reversedLogs.map(log => {
+      const meta = STATUS_META[log.status] || { label: escapeHtml(log.status), hex:"#888" };
+      const d = new Date(log.timestamp);
+
+      if(log.origIndex === editingIndex){
+        return `<div class="log-entry editing">
+          <div class="eyebrow">Editing entry · ${d.toLocaleDateString()}</div>
+          <div class="status-grid" id="editStatusGrid"></div>
+          <label for="editNotes" style="margin-top:12px;">Notes</label>
+          <textarea id="editNotes">${escapeHtml(log.notes || "")}</textarea>
+          <div class="le-actions">
+            <button class="save-btn le-save-btn" data-index="${log.origIndex}" style="width:auto; flex:1;">Save changes</button>
+            <button class="le-cancel-btn" data-index="${log.origIndex}">Cancel</button>
+          </div>
+        </div>`;
+      }
+
+      return `<div class="log-entry" style="border-left-color:${meta.hex}">
+        <div class="le-top">
+          <span class="status-pill" style="background:${meta.hex}">${meta.label}</span>
+          <span class="le-meta">${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
+        </div>
+        <div class="le-meta">by ${escapeHtml(log.member)}</div>
+        ${log.notes ? `<div class="le-notes">${escapeHtml(log.notes)}</div>` : ""}
+        ${leadLineHtml(log)}
+        <div class="le-actions">
+          <button class="le-edit-btn" data-index="${log.origIndex}">Edit</button>
+          <button class="le-delete-btn" data-index="${log.origIndex}">Delete</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    panel.innerHTML = `
+      <div class="panel-head">
+        <button class="panel-close" id="closePanelBtn">✕</button>
+        <div class="address-row">
+          ${editingAddress
+            ? `<input type="text" id="addressEditInput" value="${escapeHtml(pin.address)}" style="flex:1;">`
+            : `<h2>${escapeHtml(pin.address)}</h2><button class="edit-address-btn" id="editAddressBtn" title="Edit address">✏️</button>`
+          }
+        </div>
+        ${editingAddress ? `<div class="le-actions" style="margin-top:8px;">
+            <button class="save-btn" id="addressSaveBtn" style="width:auto; flex:1; margin-top:0;">Save</button>
+            <button class="le-cancel-btn" id="addressCancelBtn">Cancel</button>
+          </div>` : ""}
+        <div class="coords">${pin.lat.toFixed(5)}, ${pin.lng.toFixed(5)} · ${pin.logs.length} log entr${pin.logs.length===1?'y':'ies'}</div>
+      </div>
+      <div class="panel-body">
+        ${logsHtml}
+        <div class="new-log-form">
+          <div class="eyebrow">Add new entry</div>
+          <div id="panelStatusGrid" class="status-grid"></div>
+          <div class="lead-card" id="panelLeadCard">${leadCardHtml("panel")}</div>
+          <label for="panelNotes" style="margin-top:12px;">Notes (optional)</label>
+          <textarea id="panelNotes" placeholder="What happened at the door?"></textarea>
+          <button class="save-btn" id="panelSaveBtn">Log this visit</button>
+          <button class="le-cancel-btn" id="panelCancelBtn" style="width:100%; text-align:center; margin-top:10px; padding:10px; border:1px solid var(--line);">Close</button>
+        </div>
+      </div>
+    `;
+
+    panel.querySelectorAll(".le-edit-btn, .le-delete-btn").forEach(b => {
+      const lg = pin.logs[parseInt(b.dataset.index, 10)];
+      if(!(isManager() || (me && lg && lg.member_id === me.id))) b.style.display = "none";
+    });
+
+    $("closePanelBtn").addEventListener("click", () => {
+      panel.classList.remove("open");
+      activePinId = null;
+    });
+
+    $("panelCancelBtn").addEventListener("click", () => {
+      panel.classList.remove("open");
+      activePinId = null;
+    });
+
+    if(editingAddress){
+      $("addressSaveBtn").addEventListener("click", async () => {
+        const newAddr = $("addressEditInput").value.trim();
+        if(newAddr){
+          const r = await supabaseClient.from("doors").update({ address: newAddr, updated_at: new Date().toISOString() }).eq("id", id).select("id");
+          if(r.error) dbError(r.error, "update the address");
+          else if(!r.data || !r.data.length) showToast("Only the person who logged this door, or an admin or dispatcher, can change its address.", "error", 6000);
+          else { pin.address = newAddr; showToast("Address updated.", "success", 2500); }
+        }
+        openSidePanel(id, editingIndex, false);
+      });
+      $("addressCancelBtn").addEventListener("click", () => {
+        openSidePanel(id, editingIndex, false);
+      });
+    } else {
+      $("editAddressBtn").addEventListener("click", () => {
+        openSidePanel(id, editingIndex, true);
+      });
+    }
+
+    // Edit/delete buttons on existing entries
+    panel.querySelectorAll(".le-edit-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        openSidePanel(id, parseInt(btn.dataset.index, 10));
+      });
+    });
+    panel.querySelectorAll(".le-delete-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const idx = parseInt(btn.dataset.index, 10);
+        const ok = await showConfirm("Delete this log entry? This can't be undone.");
+        if(!ok) return;
+        const log = pin.logs[idx];
+        const del = await supabaseClient.from("visits").delete().eq("id", log.id).select("id");
+        if(del.error){ dbError(del.error, "delete this entry"); return; }
+        if(!del.data || !del.data.length){ showToast("You can only delete your own entries.", "error", 5000); return; }
+        pin.logs.splice(idx, 1);
+        if(pin.logs.length === 0){
+          const dd = await supabaseClient.from("doors").delete().eq("id", id).select("id");
+          if(!dd.error && dd.data && dd.data.length){
+            delete pins[id];
+            if(markers[id]){ map.removeLayer(markers[id]); delete markers[id]; }
+            panel.classList.remove("open");
+            activePinId = null;
+            return;
+          }
+        }
+        refreshMarker(id);
+        openSidePanel(id);
+      });
+    });
+
+    // Inline edit form for the entry being edited
+    if(editingIndex !== null){
+      const editEntry = pin.logs[editingIndex];
+      let editStatus = editEntry.status;
+      function pickEditStatus(key){
+        editStatus = key;
+        renderStatusGrid($("editStatusGrid"), editStatus, pickEditStatus);
+      }
+      renderStatusGrid($("editStatusGrid"), editStatus, pickEditStatus);
+
+      panel.querySelector(".le-save-btn").addEventListener("click", async () => {
+        const notes = $("editNotes").value.trim();
+        const up = await supabaseClient.from("visits").update({ status: editStatus, notes }).eq("id", editEntry.id).select("id");
+        if(up.error){ dbError(up.error, "save your changes"); return; }
+        if(!up.data || !up.data.length){ showToast("You can only edit your own entries.", "error", 5000); return; }
+        pin.logs[editingIndex] = { ...editEntry, status: editStatus, notes };
+        refreshMarker(id);
+        openSidePanel(id);
+      });
+      panel.querySelector(".le-cancel-btn").addEventListener("click", () => {
+        openSidePanel(id);
+      });
+    }
+
+    let panelStatus = "talked";
+    function pickPanelStatus(key){
+      panelStatus = key;
+      renderStatusGrid($("panelStatusGrid"), panelStatus, pickPanelStatus);
+      syncLeadCard("panel", key);
+    }
+    renderStatusGrid($("panelStatusGrid"), panelStatus, pickPanelStatus);
+
+    $("panelSaveBtn").addEventListener("click", async () => {
+      const notes = $("panelNotes").value.trim();
+      $("panelSaveBtn").disabled = true;
+      $("panelSaveBtn").textContent = "Saving…";
+      const lead = readLeadCard("panel", panelStatus);
+      const linkHome = panelLinkHome && panelLinkHome.door === id ? panelLinkHome.home : "";
+      const ins = await supabaseClient.rpc("log_door_visit", { p: Object.assign({ door_id: id, status: panelStatus, notes, home_id: linkHome }, lead) });
+      if(ins.error){ dbError(ins.error, "log this visit"); $("panelSaveBtn").disabled = false; $("panelSaveBtn").textContent = "Retry"; return; }
+      if(linkHome){ if(!pins[id].home_id) pins[id].home_id = linkHome; panelLinkHome = null; }
+      pins[id].logs.push(Object.assign({ id: ins.data.visit_id, member_id: me && me.id, member: currentUser, status: panelStatus, notes, timestamp: new Date(ins.data.visited_at).getTime(),
+        homeowner_name:"", phone:"", email:"", follow_at:null, lead_pm:"" }, lead));
+      refreshMarker(id);
+      openSidePanel(id);
+    });
+  }
+
+  // ---------- List view ----------
+  function renderList(){
+    populateFilterMembers();
+    const search = $("searchInput").value.toLowerCase();
+    const statusFilter = $("filterStatus").value;
+    const memberFilter = $("filterMember").value;
+
+    let rows = [];
+    Object.keys(pins).forEach(id => {
+      const pin = pins[id];
+      pin.logs.forEach((log, idx) => {
+        rows.push({ id, address: pin.address, lat: pin.lat, lng: pin.lng, ...log, logIndex: idx });
+      });
+    });
+    rows.sort((a,b) => b.timestamp - a.timestamp);
+
+    rows = rows.filter(r => {
+      if(search && !r.address.toLowerCase().includes(search)) return false;
+      if(statusFilter && r.status !== statusFilter) return false;
+      if(memberFilter && r.member !== memberFilter) return false;
+      return true;
+    });
+
+    $("listCount").textContent = rows.length + " entr" + (rows.length===1?"y":"ies");
+
+    if(rows.length === 0){
+      $("tableWrap").innerHTML = `<div class="empty-state">No log entries match yet. Tap a house on the map to get started.</div>`;
+      return;
+    }
+
+    const body = rows.map(r => {
+      const meta = STATUS_META[r.status] || { label:escapeHtml(r.status), hex:"#888" };
+      const d = new Date(r.timestamp);
+      return `<tr data-pin="${r.id}">
+        <td>${escapeHtml(r.address)}</td>
+        <td><span class="row-status"><span class="dot" style="background:${meta.hex}"></span>${meta.label}</span></td>
+        <td>${escapeHtml(r.member)}</td>
+        <td>${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</td>
+        <td>${escapeHtml(r.notes || "—")}</td>
+      </tr>`;
+    }).join("");
+
+    $("tableWrap").innerHTML = `<table class="log-table">
+      <thead><tr><th>Address</th><th>Status</th><th>Logged by</th><th>When</th><th>Notes</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>`;
+
+    document.querySelectorAll("#tableWrap tr[data-pin]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        document.querySelector('.tab-btn[data-tab="map"]').click();
+        setTimeout(() => {
+          const pin = pins[tr.dataset.pin];
+          if(pin){ map.setView([pin.lat, pin.lng], 17); openSidePanel(tr.dataset.pin); }
+        }, 80);
+      });
+    });
+  }
+
+  function populateFilterMembers(){
+    const sel = $("filterMember");
+    const current = sel.value;
+    sel.innerHTML = `<option value="">All team members</option>` +
+      memberNames().map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+    sel.value = current;
+  }
+
+  $("searchInput").addEventListener("input", renderList);
+  $("filterStatus").addEventListener("change", renderList);
+  $("filterMember").addEventListener("change", renderList);
+
+  // ---------- Stats dashboard ----------
+  let statsRange = "week", statsFrom = "", statsTo = "";
+  function statsBounds(){
+    const sod = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+    const now = new Date();
+    if(statsRange === "today") return [sod(now).getTime(), Infinity];
+    if(statsRange === "week"){ const s = sod(now); s.setDate(s.getDate() - ((s.getDay() + 6) % 7)); return [s.getTime(), Infinity]; }
+    if(statsRange === "30"){ const s = sod(now); s.setDate(s.getDate() - 29); return [s.getTime(), Infinity]; }
+    if(statsRange === "custom") return [statsFrom ? new Date(statsFrom + "T00:00:00").getTime() : -Infinity, statsTo ? new Date(statsTo + "T23:59:59.999").getTime() : Infinity];
+    return [-Infinity, Infinity];
+  }
+  function pctText(a, b){ return b ? Math.round(a * 100 / b) + "%" : "—"; }
+  // Doors per hour: for each person and day with 2+ visits, unique doors divided by the time from first to last visit (15 minutes minimum).
+  function doorsPerHour(logs){
+    const groups = {};
+    logs.forEach(l => { const d = new Date(l.timestamp); const k = l.member + "|" + d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate(); (groups[k] = groups[k] || []).push(l); });
+    let doors = 0, hours = 0;
+    Object.values(groups).forEach(g => {
+      if(g.length < 2) return;
+      const ts = g.map(l => l.timestamp);
+      hours += Math.max(0.25, (Math.max(...ts) - Math.min(...ts)) / 3600000);
+      doors += new Set(g.map(l => l.door)).size;
+    });
+    return hours ? (doors / hours).toFixed(1) : "—";
+  }
+  function renderStats(){
+    const [from, to] = statsBounds();
+    const allLogs = [];
+    Object.keys(pins).forEach(id => (pins[id].logs || []).forEach(log => { if(log.timestamp >= from && log.timestamp <= to) allLogs.push(Object.assign({ door:id }, log)); }));
+
+    const ranges = [["today", "Today"], ["week", "This week"], ["30", "Last 30 days"], ["all", "All time"], ["custom", "Pick dates"]];
+    $("statsRange").innerHTML = ranges.map(r => '<button type="button" class="sub-tab' + (statsRange === r[0] ? ' active' : '') + '" data-range="' + r[0] + '">' + r[1] + '</button>').join("") +
+      (statsRange === "custom" ? '<input type="date" id="statsFrom" value="' + escapeHtml(statsFrom) + '"> to <input type="date" id="statsTo" value="' + escapeHtml(statsTo) + '">' : '');
+    $("statsRange").querySelectorAll("[data-range]").forEach(b => b.addEventListener("click", () => { statsRange = b.dataset.range; renderStats(); }));
+    if($("statsFrom")){ $("statsFrom").addEventListener("change", e => { statsFrom = e.target.value; renderStats(); }); $("statsTo").addEventListener("change", e => { statsTo = e.target.value; renderStats(); }); }
+
+    const visits = allLogs.length;
+    const doors = new Set(allLogs.map(l => l.door)).size;
+    const contacts = allLogs.filter(l => l.status !== "nothome").length;
+    const appts = allLogs.filter(l => l.status === "appointment").length;
+    const sold = allLogs.filter(l => l.status === "sold").length;
+    $("statsCards").innerHTML =
+      '<div class="stat-card"><div class="num">' + fmtN(doors) + '</div><div class="lbl">Doors knocked</div><div class="sub">' + fmtN(visits) + ' visits</div></div>' +
+      '<div class="stat-card"><div class="num">' + pctText(contacts, visits) + '</div><div class="lbl">Contact rate</div><div class="sub">' + fmtN(contacts) + ' talked to someone</div></div>' +
+      '<div class="stat-card highlight"><div class="num">' + fmtN(appts) + '</div><div class="lbl">Appointments set</div><div class="sub">' + (doors ? (appts * 100 / doors).toFixed(1) : "—") + ' per 100 doors</div></div>' +
+      '<div class="stat-card"><div class="num">' + doorsPerHour(allLogs) + '</div><div class="lbl">Doors per hour</div><div class="sub">first to last visit each day</div></div>' +
+      '<div class="stat-card highlight2"><div class="num">' + fmtN(sold) + '</div><div class="lbl">Deals closed</div></div>';
+
+    const byMember = {};
+    allLogs.forEach(l => { (byMember[l.member] = byMember[l.member] || []).push(l); });
+    const rows = Object.keys(byMember).map(m => {
+      const ls = byMember[m], d = new Set(ls.map(l => l.door)).size, c = ls.filter(l => l.status !== "nothome").length;
+      const a = ls.filter(l => l.status === "appointment").length, s = ls.filter(l => l.status === "sold").length;
+      return { m, visits:ls.length, doors:d, contact:pctText(c, ls.length), appts:a, per100: d ? (a * 100 / d).toFixed(1) : "—", sold:s, dph:doorsPerHour(ls) };
+    }).sort((x, y) => (y.appts + y.sold) - (x.appts + x.sold) || y.visits - x.visits);
+    $("leaderboardWrap").innerHTML = rows.length ? '<div class="lb-scroll"><table class="leaderboard"><thead><tr><th>Team member</th><th>Doors</th><th>Visits</th><th>Contact rate</th><th>Appts</th><th>Appts per 100 doors</th><th>Doors per hour</th><th>Sold</th></tr></thead><tbody>' +
+      rows.map(r => '<tr><td>' + escapeHtml(r.m) + '</td><td>' + r.doors + '</td><td>' + r.visits + '</td><td>' + r.contact + '</td><td>' + r.appts + '</td><td>' + r.per100 + '</td><td>' + r.dph + '</td><td>' + r.sold + '</td></tr>').join("") +
+      '</tbody></table></div>' : '<div class="empty-state">No visits logged in this period.</div>';
+
+    const counts = {};
+    Object.keys(STATUS_META).forEach(k => { counts[k] = 0; });
+    allLogs.forEach(l => { if(counts[l.status] !== undefined) counts[l.status]++; });
+    const maxCount = Math.max(1, ...Object.values(counts));
+    $("statusChart").innerHTML = visits ? Object.keys(STATUS_META).map(key => {
+      const meta = STATUS_META[key], count = counts[key], pct = Math.round((count / maxCount) * 100);
+      return '<div class="chart-row"><div class="chart-label">' + meta.label + '</div><div class="chart-track"><div class="chart-fill" style="width:' + pct + '%; background:' + meta.hex + ';"></div></div><div class="chart-count">' + count + '</div></div>';
+    }).join("") : '<div class="empty-state">No visits logged in this period.</div>';
+  }
+
+  // ---------- Team view ----------
+  const ROLE_LABEL = { admin:"Admin", dispatch:"Dispatch", pm:"Project manager", knocker:"Knocker" };
+  function renderTeam(){
+    const list = Object.values(profiles).sort((a,b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+    const admin = !!me && me.role === "admin";
+    $("memberList").innerHTML = list.map(p => {
+      let html = '<div class="member-row"><span>' + escapeHtml(p.full_name || p.email) +
+        '<br><span class="le-meta">' + escapeHtml(p.email) + ' · ' + (ROLE_LABEL[p.role] || escapeHtml(p.role)) +
+        (p.active ? '' : ' · turned off') + (p.must_change_password ? ' · hasn’t set a password yet' : '') + '</span></span>';
+      if(admin && p.id !== me.id){
+        html += '<span style="display:flex;gap:8px;align-items:center;flex-shrink:0;"><select data-id="' + p.id + '" class="roleSel" style="width:auto;padding:6px;">' +
+          Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"' + (p.role === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
+          '</select><button data-id="' + p.id + '" class="activeBtn">' + (p.active ? 'Turn off' : 'Turn on') + '</button></span>';
+      }
+      return html + '</div>';
+    }).join('') || '<div class="empty-state" style="padding:20px 0;">No team members yet.</div>';
+    $("teamHelp").textContent = admin
+      ? "To add someone: in Supabase, add them to the roster table (email, name, role), then go to Authentication → Users → Add user → Create new user, enter their email and the temporary password, and tick Auto Confirm User. They pick their own password the first time they sign in. Turning someone off locks them out right away; their visits stay."
+      : "";
+    if(!admin) return;
+    document.querySelectorAll(".roleSel").forEach(sel => sel.addEventListener("change", async () => {
+      const r = await supabaseClient.from("profiles").update({ role: sel.value }).eq("id", sel.dataset.id).select("id");
+      if(r.error) dbError(r.error, "change the role");
+      else { profiles[sel.dataset.id].role = sel.value; showToast("Role updated.", "success", 2500); renderTeam(); }
+    }));
+    document.querySelectorAll(".activeBtn").forEach(btn => btn.addEventListener("click", async () => {
+      const p = profiles[btn.dataset.id];
+      if(p.active){
+        $("confirmYesBtn").textContent = "Turn off";
+        const ok = await showConfirm("Turn off " + (p.full_name || p.email) + "? They won't be able to sign in. Their visits stay.");
+        $("confirmYesBtn").textContent = "Delete";
+        if(!ok) return;
+      }
+      const r = await supabaseClient.from("profiles").update({ active: !p.active }).eq("id", p.id).select("id");
+      if(r.error) dbError(r.error, "update this person");
+      else { p.active = !p.active; renderTeam(); }
+    }));
+  }
+  $("changeMyPassBtn").addEventListener("click", () => { showLoginScreen(); showLoginError(""); showChangePassForm(false); });
+
+  // ---------- Dispatch: hail neighborhoods, assignments, crew, knock blocks ----------
+  const PM_NAMES = ["Scottie","Chris Smith","Cory Anderson","Jesse Bryant","Michele","Mitch Ledford","Joey Gallitz","Mike Crespo","John Jenkins","Ian Haid","Evan"];
+  const NB_STATUS = { open:"Not started", assigned:"Assigned", working:"Being worked", done:"Worked out", hold:"Hold" };
+  const NB_STATUS_COLOR = { open:"#8a8371", assigned:"#2f6f8f", working:"#c98a2c", done:"#3f7d4f", hold:"#a13d31" };
+  let nbs = [], nbById = {}, streetsByNb = {}, streetById = {}, assignByNb = {}, streetAssign = {}, blocks = [], homesCache = {};
+  let dispatchSel = null, dispatchSub = "areas", openStreetId = null, mineSel = null, hailLayer = null;
+  let nbFilter = { q:"", status:"", knocker:"" };
+
+  function hailColor(h){ return h >= 1.25 ? "#9c1f3c" : h >= 1.0 ? "#d9562f" : h >= 0.9 ? "#ef9f4a" : "#d9b23f"; }
+  function fmtN(n){ return Number(n || 0).toLocaleString("en-US"); }
+  function fmtDate(d){ const p = String(d).split("-"); return p.length === 3 ? (+p[1]) + "/" + (+p[2]) : d; }
+  function shortDate(s){ const p = String(s).split("/"); return p.length === 3 ? p[0] + "/" + p[1] + "/" + p[2].slice(2) : s; }
+  function milesBetween(a, b, c, d){ const x = (d - b) * 69 * Math.cos(35 * Math.PI / 180), y = (c - a) * 69; return Math.sqrt(x * x + y * y); }
+  function uniq(a){ return a.filter((x, i) => a.indexOf(x) === i); }
+  function firstWord(s){ return String(s || "").split(" ")[0].toLowerCase(); }
+  function assignFor(id){ return assignByNb[id] || { neighborhood_id:id, status:"open", pm:"", knockers:[], notes:"" }; }
+  function crewPeople(){ return Object.values(profiles).filter(p => p.active).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email)); }
+  function showDispatchTab(){ $("dispatchTabBtn").style.display = isManager() ? "" : "none"; }
+  function normAddr(a){
+    return String(a || "").toLowerCase()
+      .replace(/\b(drive|dr)\b/g, "dr").replace(/\b(road|rd)\b/g, "rd").replace(/\b(lane|ln)\b/g, "ln").replace(/\b(court|ct)\b/g, "ct")
+      .replace(/\b(circle|cir|cr)\b/g, "cir").replace(/\b(street|st)\b/g, "st").replace(/\b(avenue|ave|av)\b/g, "ave").replace(/\b(place|pl)\b/g, "pl")
+      .replace(/\b(way|wy)\b/g, "way").replace(/\b(trail|trl)\b/g, "trl").replace(/\b(boulevard|blvd)\b/g, "blvd").replace(/\b(parkway|pkwy|py)\b/g, "pkwy")
+      .replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  async function loadDispatch(){
+    try{
+      const res = await Promise.all([
+        fetchAll("neighborhoods", "id,name,homes,storms,max_hail,center,lat,lng,cities", "id"),
+        fetchAll("streets", "id,neighborhood_id,name,city,zip,homes,max_hail", "id"),
+        fetchAll("assignments", "neighborhood_id,status,pm,knockers,notes,updated_at,updated_by", "neighborhood_id"),
+        fetchAll("street_assignments", "street_id,knocker", "street_id"),
+        fetchAll("knock_blocks", "id,block_date,dow,window_text,generator,pm,place,neighborhood_id,result,note", "block_date")
+      ]);
+      nbs = res[0].sort((x, y) => y.homes - x.homes);
+      nbById = {}; nbs.forEach(x => { nbById[x.id] = x; });
+      streetsByNb = {}; streetById = {};
+      res[1].forEach(x => { (streetsByNb[x.neighborhood_id] = streetsByNb[x.neighborhood_id] || []).push(x); streetById[x.id] = x; });
+      Object.values(streetsByNb).forEach(list => list.sort((p, q) => (q.max_hail || 0) - (p.max_hail || 0) || q.homes - p.homes));
+      assignByNb = {}; res[2].forEach(x => { x.knockers = x.knockers || []; assignByNb[x.neighborhood_id] = x; });
+      streetAssign = {}; res[3].forEach(x => { streetAssign[x.street_id] = x.knocker; });
+      blocks = res[4];
+    }catch(e){ dbError(e, "load the dispatch board"); }
+    drawHailAreas();
+  }
+
+  function drawHailAreas(){
+    if(!map) return;
+    if(hailLayer) map.removeLayer(hailLayer);
+    hailLayer = L.layerGroup();
+    nbs.forEach(n => {
+      if(n.lat == null || n.lng == null) return;
+      const col = hailColor(+n.max_hail || 0);
+      const r = Math.max(400, Math.min(3500, Math.sqrt(n.homes) * 45));
+      L.circle([n.lat, n.lng], { radius:r, color:col, weight:1.5, fillColor:col, fillOpacity:0.10, interactive:false }).addTo(hailLayer);
+      const dot = L.circleMarker([n.lat, n.lng], { radius:8, color:"#fff", weight:2, fillColor:col, fillOpacity:1, bubblingMouseEvents:false });
+      dot.bindPopup(() => nbPopupHtml(n));
+      dot.on("popupopen", ev => {
+        const el = ev.popup.getElement();
+        const b = el.querySelector(".nb-open"); if(b) b.addEventListener("click", () => openNbInTab(n.id));
+        const z = el.querySelector(".nb-zoom"); 
+      });
+      dot.addTo(hailLayer);
+    });
+    hailLayer.addTo(map);
+    hookHomeLayer();
+    drawHomeLayer();
+    drawStreetLines();
+  }
+
+  function nbPopupHtml(n){
+    const a = assignFor(n.id);
+    const ks = a.knockers.map(id => nameFor(id)).join(", ");
+    return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
+      fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
+      '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
+      '<br><button type="button" class="nb-zoom save-btn" data-nb="' + escapeHtml(n.id) + '" onclick="window.__nbZoom && window.__nbZoom(this.getAttribute(\'data-nb\'))" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
+      '<button class="nb-open save-btn" style="margin-top:6px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
+  }
+
+  function openNbInTab(id){
+    openStreetId = null;
+    if(isManager()){ dispatchSel = id; dispatchSub = "areas"; document.querySelector('.tab-btn[data-tab="dispatch"]').click(); }
+    else { mineSel = id; document.querySelector('.tab-btn[data-tab="mine"]').click(); }
+  }
+
+  function doorsNear(n){
+    let doors = 0, appts = 0;
+    Object.values(pins).forEach(p => {
+      if(n.lat == null || milesBetween(p.lat, p.lng, n.lat, n.lng) > 3) return;
+      doors++;
+      (p.logs || []).forEach(l => { if(l.status === "appointment") appts++; });
+    });
+    return { doors, appts };
+  }
+
+  function nbDetailHtml(n, editable){
+    const a = assignFor(n.id), people = crewPeople(), st = streetsByNb[n.id] || [];
+    let h = '<div class="nb-head"><h2>' + escapeHtml(n.name) + '</h2><a class="le-edit-btn" href="https://www.google.com/maps?q=' + n.lat + ',' + n.lng + '" target="_blank" rel="noopener">Directions to center →</a></div>' +
+      '<div class="le-meta">' + escapeHtml((n.cities || []).join(" · ")) + (n.center ? ' · drive to ' + escapeHtml(n.center) : '') + '</div>' +
+      '<div class="stats-cards mini"><div class="stat-card"><div class="num">' + fmtN(n.homes) + '</div><div class="lbl">Homes on list</div></div>' +
+      '<div class="stat-card"><div class="num">' + Number(n.max_hail).toFixed(2) + '"</div><div class="lbl">Biggest hail · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + '</div></div>' +
+      '<div class="stat-card" id="nbCoverage"><div class="num">…</div><div class="lbl">Coverage</div></div>' +
+      '<div class="stat-card highlight" id="nbAppts"><div class="num">…</div><div class="lbl">Appointments on this list</div></div></div>';
+    if(editable){
+      h += '<div class="assign-grid"><div><label for="nbStatusSel">Status</label><select id="nbStatusSel">' + Object.keys(NB_STATUS).map(k => '<option value="' + k + '"' + (a.status === k ? ' selected' : '') + '>' + NB_STATUS[k] + '</option>').join("") + '</select></div>' +
+        '<div><label for="nbPmSel">PM who owns it</label><select id="nbPmSel"><option value="">No PM yet</option>' + PM_NAMES.map(p => '<option' + (a.pm === p ? ' selected' : '') + '>' + p + '</option>').join("") + '</select></div></div>' +
+        '<label>Knockers on the whole neighborhood</label><div class="toggle-row" id="nbKnockers">' + people.map(p => '<button type="button" class="toggle' + (a.knockers.indexOf(p.id) >= 0 ? ' on' : '') + '" data-id="' + p.id + '">' + escapeHtml(p.full_name || p.email) + '</button>').join("") + '</div>' +
+        '<label for="nbNotes">Dispatch notes</label><textarea id="nbNotes" placeholder="Where to start, gate codes, what the PM wants">' + escapeHtml(a.notes || "") + '</textarea>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px"><button class="save-btn" id="nbSaveNotes" style="width:auto;padding:9px 16px;margin-top:0">Save notes</button>' +
+        (a.updated_at ? '<span class="le-meta">Last change ' + new Date(a.updated_at).toLocaleString([], { month:"numeric", day:"numeric", hour:"numeric", minute:"2-digit" }) + (a.updated_by ? ' by ' + escapeHtml(nameFor(a.updated_by)) : '') + '</span>' : '') + '</div>';
+    } else {
+      h += '<div class="le-meta" style="margin:8px 0">' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + '</div>' +
+        (a.notes ? '<div class="le-notes" style="margin-bottom:8px"><b>Dispatch notes:</b> ' + escapeHtml(a.notes) + '</div>' : '');
+    }
+    h += '<h3 class="streets-h">Streets <span class="le-meta">worst hail first · tap a street for its homes</span></h3><div class="table-scroll"><table class="log-table"><thead><tr><th>Street</th><th>City</th><th>Homes</th><th>Knocked</th><th>Hail</th><th>Knocker</th></tr></thead><tbody>' +
+      st.map(s => {
+        const who = streetAssign[s.id] || "";
+        let row = '<tr class="street-row" data-sid="' + s.id + '"><td>' + (openStreetId === s.id ? '▾ ' : '▸ ') + escapeHtml(s.name) + '</td><td>' + escapeHtml(s.city) + ' ' + escapeHtml(s.zip) + '</td><td>' + s.homes +
+          '</td><td class="cov-cell" data-sid="' + s.id + '">…</td><td><span class="hail-pill" style="background:' + hailColor(+s.max_hail) + '">' + Number(s.max_hail).toFixed(2) + '</span></td><td>' +
+          (editable ? '<select class="street-knocker" data-sid="' + s.id + '"><option value="">—</option>' + people.map(p => '<option value="' + p.id + '"' + (who === p.id ? ' selected' : '') + '>' + escapeHtml(p.full_name || p.email) + '</option>').join("") + '</select>'
+                    : escapeHtml(who ? nameFor(who) : "—")) + '</td></tr>';
+        if(openStreetId === s.id) row += '<tr class="homes-row"><td colspan="6" id="homes-' + s.id + '">Loading homes…</td></tr>';
+        return row;
+      }).join("") + '</tbody></table></div>';
+    return h;
+  }
+
+  function wireNbDetail(root, n, editable, rerender){
+    if(!root) return;
+    fillCoverage(root, n);
+    root.querySelectorAll(".street-row").forEach(tr => tr.addEventListener("click", e => {
+      if(e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
+      const sid = +tr.dataset.sid; openStreetId = openStreetId === sid ? null : sid; rerender();
+    }));
+    if(openStreetId && streetById[openStreetId] && streetById[openStreetId].neighborhood_id === n.id) loadHomes(openStreetId);
+    if(!editable) return;
+    $("nbStatusSel").addEventListener("change", e => saveAssign(n.id, { status: e.target.value }));
+    $("nbPmSel").addEventListener("change", e => saveAssign(n.id, { pm: e.target.value }));
+    $("nbKnockers").querySelectorAll(".toggle").forEach(b => b.addEventListener("click", () => {
+      const cur = assignFor(n.id).knockers.slice(), i = cur.indexOf(b.dataset.id);
+      if(i >= 0) cur.splice(i, 1); else cur.push(b.dataset.id);
+      const patch = { knockers: cur };
+      if(cur.length && assignFor(n.id).status === "open") patch.status = "assigned";
+      saveAssign(n.id, patch);
+    }));
+    $("nbSaveNotes").addEventListener("click", () => saveAssign(n.id, { notes: $("nbNotes").value }));
+    root.querySelectorAll(".street-knocker").forEach(sel => sel.addEventListener("change", () => saveStreet(n.id, +sel.dataset.sid, sel.value)));
+  }
+
+  async function loadHomes(sid){
+    if(!homesCache[sid]){
+      const r = await supabaseClient.from("homes").select("id,address,storm_dates,hail,built,roof_sq,owner,lat,lng").eq("street_id", sid).order("id");
+      if(r.error){ const c = $("homes-" + sid); if(c) c.textContent = "Couldn't load these homes."; return; }
+      homesCache[sid] = r.data;
+    }
+    const cell = $("homes-" + sid);
+    if(!cell) return;
+    const idx = doorIndex(), nb = streetById[sid] ? nbById[streetById[sid].neighborhood_id] : null;
+    cell.innerHTML = '<table class="homes-table"><thead><tr><th></th><th>Address</th><th>Hail</th><th>Built</th><th>Roof sq</th><th>Owner</th><th>Last knock</th></tr></thead><tbody>' +
+      homesCache[sid].map(hm => {
+        const did = knockedDoorFor(hm, idx, nb), p = did ? pins[did] : null, l = p && p.logs.length ? p.logs[p.logs.length - 1] : null, m = l && STATUS_META[l.status];
+        return '<tr><td><button type="button" class="log-home-btn" data-hid="' + hm.id + '">' + (p ? 'Visit' : 'Log') + '</button></td><td>' + escapeHtml(hm.address) + '</td><td>' + (hm.hail != null ? Number(hm.hail).toFixed(2) : "") + '</td><td>' + escapeHtml(hm.built) + '</td><td>' + escapeHtml(hm.roof_sq != null ? hm.roof_sq : "") + '</td><td>' + escapeHtml(hm.owner) +
+          '</td><td>' + (l ? '<span class="dot" style="display:inline-block;vertical-align:-1px;background:' + (m ? m.hex : "#888") + '"></span> ' + (m ? m.label : escapeHtml(l.status)) + ' · ' + new Date(l.timestamp).toLocaleDateString([], { month:"numeric", day:"numeric" }) + (p.logs.length > 1 ? ' · ' + p.logs.length + ' visits' : '') : '') + '</td></tr>';
+      }).join("") + '</tbody></table>';
+    cell.querySelectorAll(".log-home-btn").forEach(b => b.addEventListener("click", e => {
+      e.stopPropagation();
+      logFromHome(homesCache[sid].find(h => h.id === +b.dataset.hid), sid);
+    }));
+  }
+
+  async function saveAssign(id, patch){
+    const next = Object.assign({}, assignFor(id), patch, { neighborhood_id:id, updated_at:new Date().toISOString(), updated_by:me.id });
+    const r = await supabaseClient.from("assignments").upsert({ neighborhood_id:id, status:next.status, pm:next.pm, knockers:next.knockers, notes:next.notes, updated_at:next.updated_at, updated_by:next.updated_by }).select("neighborhood_id");
+    if(r.error){ dbError(r.error, "save this assignment"); return; }
+    if(!r.data || !r.data.length){ showToast("Only an admin or dispatcher can change assignments.", "error", 5000); return; }
+    assignByNb[id] = next;
+    showToast("Saved.", "success", 1500);
+    renderDispatch(); drawHailAreas();
+  }
+
+  async function saveStreet(nbId, sid, who){
+    const r = who
+      ? await supabaseClient.from("street_assignments").upsert({ street_id:sid, knocker:who, updated_at:new Date().toISOString(), updated_by:me.id }).select("street_id")
+      : await supabaseClient.from("street_assignments").delete().eq("street_id", sid).select("street_id");
+    if(r.error){ dbError(r.error, "save this street"); return; }
+    if(who) streetAssign[sid] = who; else delete streetAssign[sid];
+    drawStreetLines(); drawHomeLayer();
+    if(who && assignFor(nbId).status === "open") await saveAssign(nbId, { status:"assigned" });
+    else { showToast("Saved.", "success", 1500); renderDispatch(); }
+  }
+
+  function dispatchAreasHtml(){
+    if(!nbs.length) return '<div class="empty-state">No hail neighborhoods loaded yet.' + (me.role === "admin" ? ' Use Import hail lists above.' : ' Ask an admin to import the hail lists.') + '</div>';
+    const people = crewPeople(), q = nbFilter.q.toLowerCase();
+    const list = nbs.filter(n => {
+      const a = assignFor(n.id), st = streetsByNb[n.id] || [];
+      if(nbFilter.status && a.status !== nbFilter.status) return false;
+      if(nbFilter.knocker && a.knockers.indexOf(nbFilter.knocker) < 0 && !st.some(s => streetAssign[s.id] === nbFilter.knocker)) return false;
+      if(q && n.name.toLowerCase().indexOf(q) < 0 && (n.cities || []).join(" ").toLowerCase().indexOf(q) < 0 && !st.some(s => s.name.toLowerCase().indexOf(q) >= 0)) return false;
+      return true;
+    });
+    let h = '<div class="list-controls"><input type="text" id="nbQ" placeholder="Search neighborhood, city, street" value="' + escapeHtml(nbFilter.q) + '">' +
+      '<select id="nbStatusF"><option value="">Any status</option>' + Object.keys(NB_STATUS).map(k => '<option value="' + k + '"' + (nbFilter.status === k ? ' selected' : '') + '>' + NB_STATUS[k] + '</option>').join("") + '</select>' +
+      '<select id="nbKnockerF"><option value="">Any knocker</option>' + people.map(p => '<option value="' + p.id + '"' + (nbFilter.knocker === p.id ? ' selected' : '') + '>' + escapeHtml(p.full_name || p.email) + '</option>').join("") + '</select>' +
+      '<span class="list-count">' + list.length + ' of ' + nbs.length + '</span></div>';
+    h += '<div class="dispatch-grid"><div class="nb-list">' + (list.length ? list.map(n => {
+      const a = assignFor(n.id);
+      const ks = uniq(a.knockers.concat((streetsByNb[n.id] || []).map(s => streetAssign[s.id]).filter(Boolean))).map(id => nameFor(id));
+      return '<button class="nb-card' + (dispatchSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
+        fmtN(n.homes) + ' homes · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + ' · up to ' + Number(n.max_hail).toFixed(2) + '"</span>' +
+        (ks.length ? '<span class="nb-chips">' + ks.map(k => '<span class="chip">' + escapeHtml(k) + '</span>').join("") + '</span>' : '') + '</span>' +
+        '<span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span>' + (a.pm ? '<span class="le-meta">PM ' + escapeHtml(a.pm) + '</span>' : '') + '</span></button>';
+    }).join("") : '<div class="empty-state">No neighborhoods match.</div>') + '</div><div class="nb-detail" id="nbDetail">' +
+      (dispatchSel && nbById[dispatchSel] ? nbDetailHtml(nbById[dispatchSel], true) : '<div class="empty-state" style="padding:30px 10px">Pick a neighborhood to assign it.</div>') + '</div></div>';
+    return h;
+  }
+
+  function wireDispatchAreas(){
+    const q = $("nbQ");
+    if(q) q.addEventListener("input", () => { nbFilter.q = q.value; const pos = q.selectionStart; renderDispatch(); const q2 = $("nbQ"); if(q2){ q2.focus(); q2.setSelectionRange(pos, pos); } });
+    const sf = $("nbStatusF"); if(sf) sf.addEventListener("change", () => { nbFilter.status = sf.value; renderDispatch(); });
+    const kf = $("nbKnockerF"); if(kf) kf.addEventListener("change", () => { nbFilter.knocker = kf.value; renderDispatch(); });
+    $("dispatchView").querySelectorAll(".nb-card").forEach(b => b.addEventListener("click", () => {
+      dispatchSel = b.dataset.id; openStreetId = null; renderDispatch();
+      const d = $("nbDetail"); if(d && window.innerWidth < 900) d.scrollIntoView({ behavior:"smooth", block:"start" });
+    }));
+    if(dispatchSel && nbById[dispatchSel]) wireNbDetail($("nbDetail"), nbById[dispatchSel], true, renderDispatch);
+  }
+
+  function dispatchCrewHtml(){
+    const stats = {};
+    Object.values(pins).forEach(p => (p.logs || []).forEach(l => {
+      const k = l.member_id || ("name:" + l.member);
+      const s = stats[k] = stats[k] || { visits:0, appts:0, days:{}, last:0 };
+      s.visits++; if(l.status === "appointment") s.appts++;
+      s.days[new Date(l.timestamp).toDateString()] = 1; if(l.timestamp > s.last) s.last = l.timestamp;
+    }));
+    return '<div class="crew-grid">' + crewPeople().map(p => {
+      const s = stats[p.id] || { visits:0, appts:0, days:{}, last:0 };
+      const mineN = nbs.filter(n => assignFor(n.id).knockers.indexOf(p.id) >= 0);
+      const mineS = Object.keys(streetAssign).filter(sid => streetAssign[sid] === p.id);
+      const bl = blocks.filter(b => firstWord(b.generator) === firstWord(p.full_name));
+      return '<div class="team-card crew-card"><h3>' + escapeHtml(p.full_name || p.email) + '</h3><div class="le-meta">' + (ROLE_LABEL[p.role] || p.role) + '</div>' +
+        '<div class="crew-stats"><div><b>' + s.visits + '</b><span>Visits</span></div><div><b>' + s.appts + '</b><span>Appts</span></div><div><b>' + Object.keys(s.days).length + '</b><span>Days out</span></div>' +
+        '<div><b>' + (s.last ? new Date(s.last).toLocaleDateString([], { month:"numeric", day:"numeric" }) : "—") + '</b><span>Last out</span></div><div><b>' + bl.filter(b => b.result === 1).length + '</b><span>Blocks worked</span></div></div>' +
+        '<div class="le-meta" style="margin-top:8px">Neighborhoods: ' + (mineN.length ? mineN.map(n => escapeHtml(n.name)).join(", ") : "none") + (mineS.length ? ' · ' + mineS.length + ' street' + (mineS.length === 1 ? '' : 's') + ' assigned' : '') + '</div></div>';
+    }).join("") + '</div>';
+  }
+
+  function dispatchBlocksHtml(){
+    const RL = { 1:"Worked", 0:"Not worked", 2:"Never claimed", 3:"Open, needs a PM", 4:"Booked", 5:"Not marked yet" };
+    const RC = { 1:"var(--status-talked)", 0:"var(--status-notinterested)", 2:"#8a8371", 3:"var(--status-nothome)", 4:"var(--status-callback)", 5:"#8a8371" };
+    const rows = blocks.slice().sort((a, b) => a.block_date < b.block_date ? 1 : a.block_date > b.block_date ? -1 : 0);
+    if(!rows.length) return '<div class="empty-state">No knock blocks loaded yet.</div>';
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone:"America/New_York" }).format(new Date());
+    const openSoon = rows.filter(b => b.result === 3 && b.block_date >= today).length;
+    return '<div class="le-meta" style="margin:4px 0 10px">Copied from the Mothership Roofing calendar every night. PMs book blocks on the calendar; this list never changes it.' +
+      (openSoon ? ' <b style="color:var(--status-nothome)">' + openSoon + ' upcoming block' + (openSoon === 1 ? '' : 's') + (openSoon === 1 ? ' still needs a PM.' : ' still need a PM.') + '</b>' : '') + '</div>' +
+      '<div class="table-scroll"><table class="log-table"><thead><tr><th>Date</th><th>Window</th><th>Knocker</th><th>PM</th><th>Where</th><th>Result</th><th>Note</th></tr></thead><tbody>' +
+      rows.map(b => '<tr><td>' + escapeHtml(b.dow) + ' ' + fmtDate(b.block_date) + '</td><td>' + escapeHtml(b.window_text) + '</td><td>' + escapeHtml(b.generator) + '</td><td>' + escapeHtml(b.pm || "—") + '</td><td>' +
+        (b.neighborhood_id && nbById[b.neighborhood_id] ? escapeHtml(nbById[b.neighborhood_id].name) + ' · ' : '') + escapeHtml(b.place || "—") + '</td><td style="color:' + (RC[b.result] || "#8a8371") + ';font-weight:600">' + (RL[b.result] || "Unknown") + '</td><td>' + escapeHtml(b.note || "") + '</td></tr>').join("") +
+      '</tbody></table></div>';
+  }
+
+  let importMsg = "";
+  function renderDispatch(){
+    const v = $("dispatchView");
+    if(!isManager()){ v.innerHTML = '<div class="empty-state">Only an admin or dispatcher can open Dispatch.</div>'; return; }
+    let h = '<div class="sub-tabs">' + [["areas","Neighborhoods"],["crew","Crew"],["blocks","Knock blocks"]].map(x => '<button class="sub-tab' + (dispatchSub === x[0] ? ' active' : '') + '" data-sub="' + x[0] + '">' + x[1] + '</button>').join("") +
+      (me.role === "admin" ? '<label class="import-btn">Import hail lists<input type="file" id="importFile" accept=".json,application/json" hidden></label><button type="button" class="import-btn" id="locateHomesBtn" style="margin-left:6px;border:none">Put homes on the map</button>' : '') + '</div>' +
+      '<div id="importStatus" class="le-meta" style="margin-bottom:8px">' + escapeHtml(importMsg) + '</div>';
+    if(dispatchSub === "areas") h += dispatchAreasHtml();
+    if(dispatchSub === "crew") h += dispatchCrewHtml();
+    if(dispatchSub === "blocks") h += dispatchBlocksHtml();
+    v.innerHTML = h;
+    v.querySelectorAll(".sub-tab").forEach(b => b.addEventListener("click", () => { dispatchSub = b.dataset.sub; renderDispatch(); }));
+    const f = $("importFile"); if(f) f.addEventListener("change", () => { if(f.files && f.files[0]) importHailLists(f.files[0]); });
+    const lb = $("locateHomesBtn"); if(lb) lb.addEventListener("click", locateHomes);
+    if(dispatchSub === "areas") wireDispatchAreas();
+  }
+
+  let fuScope = "mine";
+  function followUpsHtml(){
+    const now = Date.now(), startToday = new Date(), endToday = new Date();
+    startToday.setHours(0, 0, 0, 0); endToday.setHours(23, 59, 59, 999);
+    const rows = [];
+    Object.keys(pins).forEach(id => {
+      const p = pins[id], logs = p.logs || [];
+      if(!logs.length) return;
+      if(fuScope === "mine" && me && !logs.some(l => l.member_id === me.id)) return;
+      const last = logs[logs.length - 1];
+      if(last.status === "callback"){
+        const due = last.follow_at ? new Date(last.follow_at).getTime() : null;
+        if(due === null || due <= endToday.getTime()) rows.push({ id, kind:"callback", due, last, tries: logs.length });
+      } else if(last.status === "nothome" && last.timestamp < startToday.getTime()){
+        rows.push({ id, kind:"nothome", due:null, last, tries: logs.filter(l => l.status === "nothome").length });
+      }
+    });
+    rows.sort((a, b) => {
+      if(a.kind !== b.kind) return a.kind === "callback" ? -1 : 1;
+      if(a.kind === "callback") return (a.due === null ? Infinity : a.due) - (b.due === null ? Infinity : b.due);
+      return a.tries - b.tries || a.last.timestamp - b.last.timestamp;
+    });
+    const cb = rows.filter(r => r.kind === "callback").length, nh = rows.length - cb;
+    let h = '<h2 class="view-h">Follow-ups</h2><div class="sub-tabs">' + [["mine", "Mine"], ["all", "Everyone"]].map(x => '<button type="button" class="sub-tab fu-scope' + (fuScope === x[0] ? ' active' : '') + '" data-scope="' + x[0] + '">' + x[1] + '</button>').join("") +
+      '<span class="le-meta">' + cb + ' call-back' + (cb === 1 ? '' : 's') + ' due · ' + nh + ' not-home house' + (nh === 1 ? '' : 's') + ' ready for another try</span></div>';
+    if(!rows.length) return h + '<div class="empty-state" style="padding:16px 10px">Nothing to follow up right now.</div>';
+    h += '<div class="fu-list">' + rows.slice(0, 60).map(r => {
+      const meta = STATUS_META[r.kind];
+      const when = r.kind === "callback" ? (r.due ? (r.due < now ? "Overdue · " : "Due ") + fmtWhen(r.due) : "No call-back time set") : "Last tried " + new Date(r.last.timestamp).toLocaleDateString([], { month:"numeric", day:"numeric" });
+      const tries = r.kind === "nothome" ? r.tries + " not-home tr" + (r.tries === 1 ? "y" : "ies") : r.tries + " visit" + (r.tries === 1 ? "" : "s");
+      return '<button type="button" class="fu-row" data-id="' + escapeHtml(r.id) + '" style="border-left-color:' + meta.hex + '"><span><b>' + escapeHtml(pins[r.id].address) + '</b><span class="le-meta">' + escapeHtml(when + " · " + tries) +
+        (r.last.homeowner_name ? ' · ' + escapeHtml(r.last.homeowner_name) : '') + (r.last.phone ? ' · ' + escapeHtml(r.last.phone) : '') + '</span></span><span class="status-pill" style="background:' + meta.hex + '">' + meta.label + '</span></button>';
+    }).join("") + '</div>';
+    if(rows.length > 60) h += '<div class="le-meta" style="margin:-10px 0 16px">Showing the first 60 of ' + rows.length + '.</div>';
+    return h;
+  }
+
+  function renderMine(){
+    const v = $("mineView");
+    if(!me){ v.innerHTML = ""; return; }
+    const myNbs = nbs.filter(n => assignFor(n.id).knockers.indexOf(me.id) >= 0 || (streetsByNb[n.id] || []).some(s => streetAssign[s.id] === me.id));
+    let h = followUpsHtml() + '<h2 class="view-h">My streets</h2>';
+    if(!myNbs.length) h += '<div class="empty-state" style="padding:24px 10px">Nothing is assigned to you yet. When dispatch assigns you a neighborhood or streets, they show up here. You can also tap a hail area on the map.</div>';
+    h += myNbs.map(n => {
+      const a = assignFor(n.id), mine = (streetsByNb[n.id] || []).filter(s => streetAssign[s.id] === me.id);
+      return '<button class="nb-card' + (mineSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
+        (a.knockers.indexOf(me.id) >= 0 ? 'Whole neighborhood' : mine.length + ' street' + (mine.length === 1 ? '' : 's') + ': ' + mine.map(s => escapeHtml(s.name)).join(", ")) + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') +
+        '</span></span><span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span></span></button>';
+    }).join("");
+    if(mineSel && nbById[mineSel]) h += '<div class="nb-detail mine-detail" id="mineDetail">' + nbDetailHtml(nbById[mineSel], false) + '</div>';
+    v.innerHTML = h;
+    v.querySelectorAll(".nb-card").forEach(b => b.addEventListener("click", () => { mineSel = mineSel === b.dataset.id ? null : b.dataset.id; openStreetId = null; renderMine(); }));
+    v.querySelectorAll(".fu-scope").forEach(b => b.addEventListener("click", () => { fuScope = b.dataset.scope; renderMine(); }));
+    v.querySelectorAll(".fu-row").forEach(b => b.addEventListener("click", () => openDoorOnMap(b.dataset.id)));
+    if(mineSel && nbById[mineSel]) wireNbDetail($("mineDetail"), nbById[mineSel], false, renderMine);
+  }
+
+  async function importHailLists(file){
+    const say = t => { importMsg = t; const el = $("importStatus"); if(el) el.textContent = t; };
+    let doc;
+    try{ doc = JSON.parse(await file.text()); }catch(e){ showToast("That file isn't a hail list file.", "error"); return; }
+    if(!doc || doc.kind !== "mothership-hail-lists" || !Array.isArray(doc.areas)){ showToast("That file isn't a hail list file.", "error"); return; }
+    const f = $("importFile"); if(f) f.disabled = true;
+    const total = doc.areas.reduce((s, a) => s + a.homeRows.length, 0);
+    let done = 0, added = 0, updated = 0, removed = 0;
+    try{
+      for(const a of doc.areas){
+        say("Loading " + a.name + "… " + fmtN(done) + " of " + fmtN(total) + " homes");
+        // Homes already on file are updated in place (matched on street + address), so their map locations stay.
+        const r = await supabaseClient.rpc("import_hail_area", { p_area: { id:a.id, name:a.name, homes:a.homes, storms:a.storms, max:a.max, center:a.center, lat:a.lat, lng:a.lng, cities:a.cities, streets:a.streets, homeRows:a.homeRows } });
+        if(r.error) throw r.error;
+        added += r.data.added; updated += r.data.updated; removed += r.data.removed;
+        done += a.homeRows.length;
+        say("Loading " + a.name + "… " + fmtN(done) + " of " + fmtN(total) + " homes");
+      }
+      if(Array.isArray(doc.blocks) && doc.blocks.length){
+        const b = await supabaseClient.from("knock_blocks").upsert(doc.blocks);
+        if(b.error) throw b.error;
+      }
+      homesCache = {};
+      await loadDispatch();
+      say("Loaded " + doc.areas.length + " neighborhoods and " + fmtN(total) + " homes (" + fmtN(updated) + " updated, " + fmtN(added) + " new, " + fmtN(removed) + " no longer on the list)" + (doc.blocks ? " plus " + doc.blocks.length + " knock blocks" : "") + ". Map locations were kept.");
+      streetGeo = {};
+      nbHomesCache = {};
+      showToast("Hail lists loaded.", "success", 4000);
+      renderDispatch();
+    }catch(e){
+      dbError(e, "finish the import");
+      say("The import stopped partway. Areas already loaded are complete; run it again with the same file to finish. Nothing is duplicated and map locations are kept.");
+    }finally{
+      const f2 = $("importFile"); if(f2) f2.disabled = false;
+    }
+  }
+
+  // ---------- Homes on the map, colored by who has each street ----------
+  const KNOCKER_COLORS = ["#2f6f8f","#c2478d","#8a5fbf","#d9822b","#1f8a70","#5a6fd6","#b5842a","#a13d31","#0f766e","#7c3aed"];
+  let homesGeo = {}, homeLayer = null, homeLegend = null, homeHint = null, homeBusy = false, homePending = false, homeHooked = false, homeTimer = null, homeRenderer = null, locating = false;
+  function knockerColor(id){ const ids = crewPeople().map(p => p.id); const i = ids.indexOf(id); return KNOCKER_COLORS[(i < 0 ? 0 : i) % KNOCKER_COLORS.length]; }
+  function csvSafe(s){ return String(s || "").replace(/[",\r\n]/g, " ").trim(); }
+
+  async function loadHomesInBounds(b){
+    const out = [];
+    for(let from = 0; from < 8000; from += 1000){
+      const r = await supabaseClient.from("homes").select("id,street_id,neighborhood_id,address,lat,lng")
+        .gte("lat", b.getSouth()).lte("lat", b.getNorth()).gte("lng", b.getWest()).lte("lng", b.getEast())
+        .order("id").range(from, from + 999);
+      if(r.error) throw r.error;
+      out.push(...r.data);
+      if(r.data.length < 1000) break;
+    }
+    return out;
+  }
+
+  // Assigned streets drawn as thick colored lines, built from the houses on each street
+  let streetGeo = {}, streetLineLayer = null, streetLinesBusy = false, streetLinesPending = false;
+  async function loadStreetHomes(ids){
+    const need = ids.filter(id => !streetGeo[id]);
+    for(let i = 0; i < need.length; i += 80){
+      const chunk = need.slice(i, i + 80), got = {};
+      chunk.forEach(id => { got[id] = []; });
+      for(let from = 0; ; from += 1000){
+        const r = await supabaseClient.from("homes").select("street_id,lat,lng").in("street_id", chunk).not("lat", "is", null).order("id").range(from, from + 999);
+        if(r.error) throw r.error;
+        r.data.forEach(h => { if(got[h.street_id]) got[h.street_id].push([h.lat, h.lng]); });
+        if(r.data.length < 1000) break;
+      }
+      Object.assign(streetGeo, got);
+    }
+  }
+  function streetSegments(pts){
+    if(!pts.length) return { segs:[], mid:null };
+    const lat0 = pts[0][0] * Math.PI / 180, kx = 111320 * Math.cos(lat0), ky = 110540;
+    const groups = [];
+    pts.forEach(p => {
+      const x = p[1] * kx, y = p[0] * ky;
+      let best = null, bd = 30;
+      groups.forEach(g => { const d = Math.hypot(g.x - x, g.y - y); if(d < bd){ bd = d; best = g; } });
+      if(best){ best.n++; best.sx += x; best.sy += y; best.x = best.sx / best.n; best.y = best.sy / best.n; }
+      else groups.push({ x, y, sx:x, sy:y, n:1 });
+    });
+    const ll = g => [g.y / ky, g.x / kx], n = groups.length;
+    let cx = 0, cy = 0; groups.forEach(g => { cx += g.x; cy += g.y; }); cx /= n; cy /= n;
+    let mid = groups[0]; groups.forEach(g => { if(Math.hypot(g.x - cx, g.y - cy) < Math.hypot(mid.x - cx, mid.y - cy)) mid = g; });
+    if(n === 1){ const c = ll(groups[0]); return { segs:[[ [c[0], c[1] - 0.0001], [c[0], c[1] + 0.0001] ]], mid:c }; }
+    const inTree = new Array(n).fill(false), dist = new Array(n).fill(Infinity), from = new Array(n).fill(-1), segs = [];
+    dist[0] = 0;
+    for(let k = 0; k < n; k++){
+      let u = -1;
+      for(let i = 0; i < n; i++) if(!inTree[i] && (u < 0 || dist[i] < dist[u])) u = i;
+      inTree[u] = true;
+      if(from[u] >= 0 && dist[u] <= 350) segs.push([ll(groups[from[u]]), ll(groups[u])]);
+      for(let i = 0; i < n; i++){
+        if(inTree[i]) continue;
+        const d = Math.hypot(groups[i].x - groups[u].x, groups[i].y - groups[u].y);
+        if(d < dist[i]){ dist[i] = d; from[i] = u; }
+      }
+    }
+    return { segs, mid:ll(mid) };
+  }
+  // Wide, see-through shading: about 36 px at street level, scaled with zoom so it covers the houses on both sides
+  let streetLines = [];
+  function streetLineWeight(){ return Math.max(8, Math.min(70, Math.round(36 * Math.pow(2, map.getZoom() - 16)))); }
+  function updateStreetTagVisibility(){
+    if(!map) return;
+    map.getContainer().classList.toggle("hide-street-tags", map.getZoom() < 15);
+    const w = streetLineWeight();
+    streetLines.forEach(l => l.setStyle({ weight:w }));
+  }
+  async function drawStreetLines(){
+    if(!map || !me) return;
+    if(streetLinesBusy){ streetLinesPending = true; return; }
+    streetLinesBusy = true;
+    try{
+      const ids = Object.keys(streetAssign).map(Number).filter(id => streetAssign[id]);
+      await loadStreetHomes(ids);
+      if(!map.getPane("streetLines")) map.createPane("streetLines").style.zIndex = 350;
+      const layer = L.layerGroup();
+      streetLines = [];
+      ids.forEach(id => {
+        const pts = streetGeo[id] || [];
+        if(!pts.length) return;
+        const who = streetAssign[id], color = knockerColor(who), s = streetById[id];
+        const shape = streetSegments(pts);
+        if(!shape.segs.length) return;
+        const line = L.polyline(shape.segs, { pane:"streetLines", color, weight:streetLineWeight(), opacity:0.2, lineCap:"round", lineJoin:"round", interactive:false });
+        streetLines.push(line);
+        const who1 = String(nameFor(who)).split(" ")[0];
+        line.addTo(layer);
+        L.marker(shape.mid, { interactive:false, keyboard:false, icon:L.divIcon({ className:"street-tag-wrap", iconSize:null,
+          html:'<span class="street-tag" style="border-left-color:' + color + '">' + escapeHtml((s ? s.name : "") + " · " + who1) + '</span>' }) }).addTo(layer);
+      });
+      if(streetLineLayer) map.removeLayer(streetLineLayer);
+      streetLineLayer = layer.addTo(map);
+      updateStreetTagVisibility();
+    }catch(e){
+      console.warn("street lines", e);
+    }finally{
+      streetLinesBusy = false;
+      if(streetLinesPending){ streetLinesPending = false; drawStreetLines(); }
+    }
+  }
+  window.__nbZoom = function(id){
+    const n = nbById[id];
+    if(!n || !map) return;
+    map.closePopup();
+    map.setView([n.lat, n.lng], 16);
+    setTimeout(drawHomeLayer, 50);
+  };
+
+  function hookHomeLayer(){
+    if(homeHooked || !map) return;
+    homeHooked = true;
+    map.on("moveend", () => { clearTimeout(homeTimer); homeTimer = setTimeout(drawHomeLayer, 300); });
+    map.on("zoomend", updateStreetTagVisibility);
+  }
+
+  function setHomeHint(text){
+    if(homeHint){ homeHint.remove(); homeHint = null; }
+    if(!text || !map) return;
+    homeHint = L.control({ position:"bottomright" });
+    homeHint.onAdd = () => { const d = L.DomUtil.create("div", "map-hint"); d.textContent = text; d.style.marginBottom = "70px"; return d; };
+    homeHint.addTo(map);
+  }
+
+  function drawHomeLegend(used){
+    if(homeLegend){ homeLegend.remove(); homeLegend = null; }
+    if(!used || !map) return;
+    homeLegend = L.control({ position:"topright" });
+    homeLegend.onAdd = () => {
+      const d = L.DomUtil.create("div", "home-legend");
+      d.innerHTML = '<b>Who has each street</b>' +
+        Object.keys(used).filter(k => k.indexOf("__") !== 0).map(id => '<div><span class="dot" style="background:' + knockerColor(id) + '"></span>' + escapeHtml(nameFor(id)) + '</div>').join("") +
+        (used.__crew ? '<div><span class="dot" style="background:#fff;border-color:#3b4a34"></span>Neighborhood crew</div>' : '') +
+        (used.__open ? '<div><span class="dot" style="background:#fff;border-color:#8a8371"></span>Open, nobody assigned</div>' : '');
+      L.DomEvent.disableClickPropagation(d);
+      return d;
+    };
+    homeLegend.addTo(map);
+  }
+
+  // House dots are off (Chad, 11/6): the map shows only the shaded assigned streets plus the color key
+  async function drawHomeLayer(){
+    if(!map || !me) return;
+    if(homeLayer){ map.removeLayer(homeLayer); homeLayer = null; }
+    setHomeHint("");
+    const used = {};
+    Object.keys(streetAssign).forEach(sid => { if(streetAssign[sid]) used[streetAssign[sid]] = 1; });
+    drawHomeLegend(map.getZoom() >= 13 && Object.keys(used).length ? used : null);
+  }
+
+  async function locateHomes(){
+    if(locating) return;
+    locating = true;
+    const say = t => { importMsg = t; const el = $("importStatus"); if(el) el.textContent = t; };
+    const btn = $("locateHomesBtn"); if(btn) btn.disabled = true;
+    try{
+      const head = await supabaseClient.from("homes").select("id", { count:"exact", head:true }).is("geo_status", null);
+      if(head.error) throw head.error;
+      const total = head.count || 0;
+      if(!total){ say("Every home already has a map location. Nothing left to place."); showToast("Every home already has a map location. Nothing left to place.", "success", 6000); return; }
+      let done = 0, found = 0;
+      while(true){
+        const r = await supabaseClient.from("homes").select("id,address,street_id").is("geo_status", null).order("id").limit(200);
+        if(r.error) throw r.error;
+        if(!r.data.length) break;
+        const csv = r.data.map(hm => {
+          const s = streetById[hm.street_id] || {};
+          const st = String(s.zip || "").indexOf("29") === 0 ? "SC" : "NC";
+          return hm.id + "," + csvSafe(hm.address) + "," + csvSafe(s.city) + "," + st + "," + csvSafe(s.zip);
+        }).join("\n");
+        let text = null;
+        for(let attempt = 0; attempt < 4 && text === null; attempt++){
+          try{
+            const sess = await supabaseClient.auth.getSession();
+            const token = sess && sess.data && sess.data.session ? sess.data.session.access_token : "";
+            const g = await fetch("/api/geocode", { method:"POST", body:csv, headers:{ "Authorization": "Bearer " + token } });
+            if(g.status === 401 || g.status === 403) throw new Error("sign in again to use address lookup");
+            if(g.ok) text = await g.text();
+            else await new Promise(res => setTimeout(res, 3000));
+          }catch(e){ if(/sign in again/.test(e.message)) throw e; await new Promise(res => setTimeout(res, 3000)); }
+        }
+        if(text === null) throw new Error("the address lookup service didn't answer");
+        const got = {};
+        text.split("\n").forEach(line => {
+          const f = []; line.replace(/"([^"]*)"/g, (m0, v) => { f.push(v); return m0; });
+          if(f.length >= 6 && f[2] === "Match"){
+            const ll = f[5].split(",");
+            const lng = parseFloat(ll[0]), lat = parseFloat(ll[1]);
+            if(isFinite(lat) && isFinite(lng)) got[f[0]] = { lat, lng };
+          }
+        });
+        const rows = r.data.map(hm => got[hm.id] ? { id:hm.id, lat:got[hm.id].lat, lng:got[hm.id].lng, status:"match" } : { id:hm.id, lat:null, lng:null, status:"nomatch" });
+        const w = await supabaseClient.rpc("set_home_locations", { rows });
+        if(w.error) throw w.error;
+        done += rows.length;
+        found += rows.filter(x => x.status === "match").length;
+        say("Putting homes on the map… " + fmtN(done) + " of " + fmtN(total) + " (" + fmtN(found) + " found)");
+      }
+      streetGeo = {};
+      say("Done: " + fmtN(found) + " of " + fmtN(done) + " homes now have a map location. They are used to draw the shaded assigned streets.");
+      showToast("Map locations saved.", "success", 4000);
+      drawHomeLayer();
+    }catch(e){
+      dbError(e, "finish putting homes on the map");
+      say("Stopped partway. Press the button again; it picks up where it left off.");
+    }finally{
+      locating = false;
+      const b2 = $("locateHomesBtn"); if(b2) b2.disabled = false;
+    }
+  }
+
+  // ---------- Utils ----------
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, s => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[s]));
+  }
+
+  // ---------- Init ----------
+  function initApp(){
+    initMap();
+  }
+
+  (async function boot(){
+    $("loadingScreen").style.display = "none";
+    if(!supabaseClient){
+      showToast("Couldn't load the sign-in system. Check your connection and reload the page.", "error", 12000);
+      return;
+    }
+    await afterAuth();
+    // Keep the team map fresh: reload when the app comes back on screen, and every 2 minutes while open
+    document.addEventListener("visibilitychange", () => {
+      if(document.visibilityState === "visible" && me && $("app").style.display === "flex") refreshData();
+    });
+    setInterval(() => {
+      if(me && document.visibilityState === "visible" && $("app").style.display === "flex") refreshData();
+    }, 120000);
+  })();
+})();
