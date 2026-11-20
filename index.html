@@ -357,6 +357,9 @@
   .mate-result .row{ display:flex; gap:8px; flex-wrap:wrap; }
   .mate-result .row a, .mate-result .row button{ font-family:var(--font-mono); font-size:12px; padding:9px 12px; border:1px solid var(--line); background:var(--paper); color:var(--ink); text-decoration:none; cursor:pointer; }
   .member-row .resetBtn{ color:var(--olive) !important; }
+  /* Controls wrap under the name so nothing gets cut off on narrow screens. */
+  #memberList .member-row{ flex-wrap:wrap; gap:6px 12px; }
+  #memberList .member-row > span:last-child{ flex-wrap:wrap; }
   .member-row button{ background:none; border:none; color:var(--status-notinterested); cursor:pointer; font-family:var(--font-mono); font-size:11px;}
   .add-row{ display:flex; gap:8px; margin-top:12px;}
   .add-row input{ flex:1; }
