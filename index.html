@@ -139,6 +139,22 @@
     border-bottom:3px solid transparent;
   }
   .tab-btn.active{ opacity:1; border-bottom-color:var(--brass-light); background:rgba(0,0,0,.12);}
+  /* ---------- Phone menu (top-right dropdown replaces the tab bar on phones) ---------- */
+  #menuBtn{ display:none; align-items:center; gap:10px; background:none; border:1px solid rgba(242,239,230,.35); color:var(--paper);
+    font-family:var(--font-mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; padding:8px 10px 8px 12px; min-height:40px; cursor:pointer; }
+  #menuBtn .burger{ display:flex; flex-direction:column; gap:3px; }
+  #menuBtn .burger i{ display:block; width:18px; height:2px; background:var(--paper); }
+  #menuBtn[aria-expanded="true"]{ background:rgba(242,239,230,.14); }
+  #mobileMenu{ position:fixed; right:8px; z-index:1300; width:min(260px, calc(100vw - 16px)); background:var(--paper);
+    border:1px solid var(--line); box-shadow:0 12px 32px rgba(0,0,0,.3); padding:6px; }
+  #mobileMenu[hidden]{ display:none; }
+  #mobileMenu .mm-item{ display:flex; align-items:center; width:100%; min-height:48px; padding:0 14px; background:none; border:none; border-left:3px solid transparent;
+    font-family:var(--font-mono); font-size:13.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); cursor:pointer; text-align:left; }
+  #mobileMenu .mm-item.active{ border-left-color:var(--brass); background:var(--paper-dim); font-weight:700; }
+  #menuAreasSlot{ border-top:1px solid var(--line); margin-top:4px; padding:10px 6px 6px; }
+  #menuAreasSlot #areasBtn{ position:static; width:100%; justify-content:flex-start; min-height:46px; box-shadow:none; }
+  #menuWho{ font-family:var(--font-mono); font-size:11px; color:#8a8371; padding:8px 14px 2px; border-top:1px solid var(--line); margin-top:6px; }
+  #mobileMenu .mm-signout{ color:#a3402e; }
 
   main{ flex:1; display:flex; overflow:hidden; position:relative;}
 
@@ -353,6 +369,9 @@
     #legend.open{ display:block; }
     #legendToggle{ display:flex; }
     header{ padding:9px 12px; padding-top:calc(9px + env(safe-area-inset-top)); }
+    .tabs{ display:none; }
+    header .who{ display:none; }
+    #menuBtn{ display:flex; }
     /* Phones: less clutter on the map (pinch to zoom; street colors are already in My Streets). */
     .home-legend{ display:none !important; }
     .leaflet-control-zoom{ display:none !important; }
@@ -518,7 +537,14 @@
       <span id="whoLabel"></span>
       <button id="logoutBtn">Sign out</button>
     </div>
+    <button id="menuBtn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobileMenu"><span id="menuBtnTab">Map</span><span class="burger" aria-hidden="true"><i></i><i></i><i></i></span></button>
   </header>
+  <div id="mobileMenu" role="menu" hidden>
+    <div id="menuTabs"></div>
+    <div id="menuAreasSlot"></div>
+    <div id="menuWho"></div>
+    <button type="button" id="menuSignOut" class="mm-item mm-signout">Sign out</button>
+  </div>
 
   <div class="tabs">
     <button class="tab-btn active" data-tab="map">Map</button>
@@ -867,6 +893,33 @@
     showLoginError("");
     $("passInput").value = "";
   });
+
+  // ---------- Phone menu: tabs, hail-area switch and sign out in one dropdown ----------
+  function syncMenuBtn(){
+    const a = document.querySelector(".tab-btn.active");
+    if(a) $("menuBtnTab").textContent = a.textContent.trim();
+  }
+  function closeMobileMenu(){ $("mobileMenu").hidden = true; $("menuBtn").setAttribute("aria-expanded", "false"); }
+  function openMobileMenu(){
+    const tabs = [...document.querySelectorAll(".tab-btn")].filter(b => b.style.display !== "none");
+    $("menuTabs").innerHTML = tabs.map(b => '<button type="button" role="menuitem" class="mm-item' + (b.classList.contains("active") ? ' active' : '') + '" data-tab="' + b.dataset.tab + '">' + escapeHtml(b.textContent.trim()) + '</button>').join("");
+    $("menuWho").textContent = $("whoLabel").textContent || "";
+    $("mobileMenu").style.top = (document.querySelector("header").getBoundingClientRect().bottom + 4) + "px";
+    $("mobileMenu").hidden = false; $("menuBtn").setAttribute("aria-expanded", "true");
+  }
+  $("menuBtn").addEventListener("click", ev => { ev.stopPropagation(); if($("mobileMenu").hidden) openMobileMenu(); else closeMobileMenu(); });
+  $("menuTabs").addEventListener("click", ev => {
+    const it = ev.target.closest(".mm-item"); if(!it) return;
+    const real = document.querySelector('.tab-btn[data-tab="' + it.dataset.tab + '"]'); if(real) real.click();
+    closeMobileMenu();
+  });
+  $("menuSignOut").addEventListener("click", () => { closeMobileMenu(); $("logoutBtn").click(); });
+  document.addEventListener("click", ev => {
+    if($("mobileMenu").hidden) return;
+    if(ev.target.closest("#mobileMenu") || ev.target.closest("#menuBtn")) return;
+    closeMobileMenu();
+  });
+  document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest(".tab-btn")) setTimeout(syncMenuBtn, 0); });
 
   // ---------- Tabs ----------
   document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -1633,6 +1686,7 @@
   const NB_STATUS_COLOR = { open:"#8a8371", assigned:"#2f6f8f", working:"#c98a2c", done:"#3f7d4f", hold:"#a13d31" };
   let nbs = [], nbById = {}, streetsByNb = {}, streetById = {}, assignByNb = {}, streetAssign = {}, blocks = [], homesCache = {};
   let dispatchSel = null, dispatchSub = "areas", openStreetId = null, mineSel = null, hailLayer = null;
+  const TOUCH_UI = window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 720px)").matches;
   // Hail-area circles on the main map can be switched off while knocking (remembered on this device).
   let showAreas = true;
   try{ showAreas = localStorage.getItem("canvassShowAreas") !== "0"; }catch(e){}
@@ -1657,7 +1711,7 @@
       const b = $("areasBtn"), who = document.querySelector("header .who"), mapView = $("mapView");
       if(!b || !who || !mapView) return;
       if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); }
-      else if(b.parentNode !== mapView){ const loc = $("locateBtn"); mapView.insertBefore(b, loc ? loc.nextSibling : null); }
+      else { const slot = $("menuAreasSlot"); if(slot && b.parentNode !== slot) slot.appendChild(b); }
     };
     place();
     if(mq.addEventListener) mq.addEventListener("change", place); else if(mq.addListener) mq.addListener(place);
@@ -1714,6 +1768,12 @@
       const r = Math.max(400, Math.min(3500, Math.sqrt(n.homes) * 45));
       L.circle([n.lat, n.lng], { radius:r, color:col, weight:1.5, fillColor:col, fillOpacity:0.10, interactive:false }).addTo(hailLayer);
       const dot = L.circleMarker([n.lat, n.lng], { radius:8, color:"#fff", weight:2, fillColor:col, fillOpacity:1, bubblingMouseEvents:false });
+      // Phones: an invisible, finger-sized ring around the dot opens the neighborhood instead of logging a house.
+      if(TOUCH_UI){
+        const hit = L.circleMarker([n.lat, n.lng], { radius:24, stroke:false, fillColor:"#000", fillOpacity:0.001, bubblingMouseEvents:false });
+        hit.on("click", ev => { L.DomEvent.stop(ev); dot.openPopup(); });
+        hit.addTo(hailLayer);
+      }
       dot.bindPopup(() => nbPopupHtml(n));
       dot.on("popupopen", ev => {
         const el = ev.popup.getElement();
