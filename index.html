@@ -157,7 +157,7 @@
     font-family:var(--font-mono); font-size:13.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); cursor:pointer; text-align:left; }
   #mobileMenu .mm-item.active{ border-left-color:var(--brass); background:var(--paper-dim); font-weight:700; }
   #menuAreasSlot{ border-top:1px solid var(--line); margin-top:4px; padding:10px 6px 6px; }
-  #menuAreasSlot #areasBtn{ position:static; width:100%; justify-content:flex-start; min-height:46px; box-shadow:none; }
+  #menuAreasSlot #areasBtn, #menuAreasSlot #custBtn{ position:static; width:100%; justify-content:flex-start; min-height:46px; box-shadow:none; }
   #menuWho{ font-family:var(--font-mono); font-size:11px; color:#8a8371; padding:8px 14px 2px; border-top:1px solid var(--line); margin-top:6px; }
   #mobileMenu .mm-signout{ color:#a3402e; }
 
@@ -194,23 +194,23 @@
     display:flex; align-items:center; justify-content:center; font-size:18px; cursor:pointer;
   }
   #locateBtn:active{ background:var(--paper-dim); }
-  #areasBtn{
+  #areasBtn, #custBtn{
     position:absolute; bottom:70px; right:12px; z-index:1002; min-height:44px; padding:0 14px;
     border-radius:22px; background:var(--olive-dark); color:var(--paper); border:1.5px solid var(--olive-dark);
     box-shadow:0 4px 14px rgba(0,0,0,.25); font-family:var(--font-mono); font-size:12.5px; font-weight:700;
     display:flex; align-items:center; gap:7px; cursor:pointer; white-space:nowrap;
   }
-  #areasBtn .sw{ width:30px; height:16px; border-radius:8px; background:rgba(255,255,255,.35); position:relative; flex-shrink:0; }
-  #areasBtn .sw::after{ content:""; position:absolute; top:2px; left:16px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .15s; }
-  #areasBtn.off{ background:var(--paper); color:var(--ink); border-color:var(--line); }
-  #areasBtn.off .sw{ background:#c9c3b3; }
-  #areasBtn.off .sw::after{ left:2px; }
+  #areasBtn .sw, #custBtn .sw{ width:30px; height:16px; border-radius:8px; background:rgba(255,255,255,.35); position:relative; flex-shrink:0; }
+  #areasBtn .sw::after, #custBtn .sw::after{ content:""; position:absolute; top:2px; left:16px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .15s; }
+  #areasBtn.off, #custBtn.off{ background:var(--paper); color:var(--ink); border-color:var(--line); }
+  #areasBtn.off .sw, #custBtn.off .sw{ background:#c9c3b3; }
+  #areasBtn.off .sw::after, #custBtn.off .sw::after{ left:2px; }
   /* On computers the switch lives in the top header, next to the user name. */
-  header #areasBtn{ position:static; min-height:0; padding:5px 12px 5px 8px; border-radius:16px; box-shadow:none;
+  header #areasBtn, header #custBtn{ position:static; min-height:0; padding:5px 12px 5px 8px; border-radius:16px; box-shadow:none;
     background:var(--brass); border:1px solid var(--brass); color:var(--olive-dark); font-size:11.5px; letter-spacing:.03em; }
-  header #areasBtn .sw{ background:rgba(19,20,22,.35); }
-  header #areasBtn.off{ background:transparent; color:var(--paper); border-color:rgba(242,239,230,.45); }
-  header #areasBtn.off .sw{ background:rgba(242,239,230,.3); }
+  header #areasBtn .sw, header #custBtn .sw{ background:rgba(19,20,22,.35); }
+  header #areasBtn.off, header #custBtn.off{ background:transparent; color:var(--paper); border-color:rgba(242,239,230,.45); }
+  header #areasBtn.off .sw, header #custBtn.off .sw{ background:rgba(242,239,230,.3); }
   #locateBtn.tracking{ background:var(--navy); color:#fff; border-color:var(--navy); }
 
   .user-dot-outer{
@@ -373,6 +373,19 @@
   .add-row input{ flex:1; }
   .add-row button{ padding:0 16px; background:var(--olive); color:#fff; border:none; cursor:pointer; font-family:var(--font-mono); font-size:12px;}
 
+  /* Customer / calendar house markers */
+  .cust-ico{ background:none; border:none; }
+  .cust-ico svg{ display:block; filter:drop-shadow(0 1px 2px rgba(0,0,0,.55)); }
+  #menuAreasSlot #custBtn{ margin-top:8px; }
+  .cust-pop{ min-width:200px; font-size:13px; line-height:1.5; }
+  .cust-pop .tag{ display:inline-block; font-family:var(--font-mono); font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:10px; margin-bottom:5px; }
+  .cust-pop .tag.sold{ background:#8cc63f; color:#131416; }
+  .cust-pop .tag.lead{ background:#131416; color:#a8e05f; border:1px solid #8cc63f; }
+  .cust-pop .tag.cal{ background:#e9e6dc; color:#2c2e31; border:1px solid #9a968a; }
+  .cust-pop .k{ color:#6b6a64; font-size:11.5px; }
+  .cust-pop a{ color:#3d7a12; font-weight:700; }
+  #custEditModal .modal-box{ max-height:88vh; overflow:auto; }
+  #custEditModal label{ margin-top:10px; }
   /* ---------- Modal (new pin) ---------- */
   .modal-overlay{
     position:fixed; inset:0; background:rgba(19,20,22,.6); z-index:800; display:none;
@@ -592,6 +605,7 @@
       <button id="legendToggle" title="Show legend">🎨</button>
       <button id="locateBtn" title="Find my location">📍</button>
       <button id="areasBtn" type="button" title="Show or hide the hail neighborhood circles" aria-pressed="true"><span class="sw"></span><span id="areasBtnTxt">Hail areas: ON</span></button>
+      <button id="custBtn" type="button" title="Show or hide customer and calendar houses" aria-pressed="true"><span class="sw"></span><span id="custBtnTxt">Customers: ON</span></button>
       <div id="sidePanel"></div>
     </div>
 
@@ -663,6 +677,28 @@
     <textarea id="pinNotes" placeholder="What happened at the door?"></textarea>
     <button class="save-btn" id="savePinBtn">Save entry</button>
     <button class="save-btn" id="cancelPinBtn" style="background:transparent;color:var(--olive);border:1px solid var(--line);margin-top:8px;">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="custEditModal">
+  <div class="modal-box">
+    <h2 id="custEditTitle">Edit record</h2>
+    <label for="ceName">Name</label><input type="text" id="ceName">
+    <label for="ceStreet">Address</label><input type="text" id="ceStreet">
+    <label for="cePhone">Phone</label><input type="text" id="cePhone">
+    <label for="ceAssigned">Assigned to / PM</label><input type="text" id="ceAssigned">
+    <div id="ceCustFields">
+      <label for="ceJn">JobNimbus #</label><input type="text" id="ceJn" disabled>
+      <label for="ceStage">Stage</label><input type="text" id="ceStage" placeholder="Lead, Sold ...">
+    </div>
+    <div id="ceCalFields">
+      <label for="ceSource">Lead source</label><input type="text" id="ceSource">
+      <label for="ceOutcome">Lead outcome</label><input type="text" id="ceOutcome">
+      <label for="ceClaim">Claim</label><input type="text" id="ceClaim">
+    </div>
+    <label for="ceNotes">Notes</label><textarea id="ceNotes"></textarea>
+    <button class="save-btn" id="ceSaveBtn">Save changes</button>
+    <button class="save-btn" id="ceCancelBtn" style="background:transparent;color:var(--olive);border:1px solid var(--line);margin-top:8px;">Cancel</button>
   </div>
 </div>
 
@@ -873,6 +909,7 @@
     initApp();
     redrawAllMarkers();
     await loadDispatch();
+    loadCustomers();
     showDispatchTab();
     document.querySelector('.tab-btn[data-tab="map"]').click();
   }
@@ -1796,14 +1833,125 @@
     const place = () => {
       const b = $("areasBtn"), who = document.querySelector("header .who"), mapView = $("mapView");
       if(!b || !who || !mapView) return;
-      if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); }
-      else { const slot = $("menuAreasSlot"); if(slot && b.parentNode !== slot) slot.appendChild(b); }
+      const c = $("custBtn");
+      if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); if(c && c.parentNode !== who) who.insertBefore(c, b.nextSibling); }
+      else { const slot = $("menuAreasSlot"); if(slot && b.parentNode !== slot) slot.appendChild(b); if(slot && c && c.parentNode !== slot) slot.appendChild(c); }
     };
     place();
     if(mq.addEventListener) mq.addEventListener("change", place); else if(mq.addListener) mq.addListener(place);
   })();
   document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest("#areasBtn")){ ev.stopPropagation(); setShowAreas(!showAreas); } }, true);
   let nbFilter = { q:"", status:"", knocker:"" };
+
+
+  // ---------- Customers (JobNimbus) and calendar-only addresses: static house markers ----------
+  let customers = [], custLayer = null, custById = {}, custEditId = null;
+  let showCust = true;
+  try{ showCust = localStorage.getItem("canvassShowCust") !== "0"; }catch(e){}
+  function paintCustBtn(){
+    const b = $("custBtn"); if(!b) return;
+    b.classList.toggle("off", !showCust);
+    b.setAttribute("aria-pressed", showCust ? "true" : "false");
+    $("custBtnTxt").textContent = "Customers: " + (showCust ? "ON" : "OFF");
+  }
+  function setShowCust(on){
+    showCust = on;
+    try{ localStorage.setItem("canvassShowCust", on ? "1" : "0"); }catch(e){}
+    if(map && custLayer){ if(on) custLayer.addTo(map); else map.removeLayer(custLayer); }
+    paintCustBtn();
+  }
+  document.addEventListener("DOMContentLoaded", paintCustBtn);
+  document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest("#custBtn")){ ev.stopPropagation(); setShowCust(!showCust); } }, true);
+
+  async function loadCustomers(){
+    try{
+      customers = await fetchAll("customers", "jn_number,name,street,city,state,zip,phone,stage,assigned_to,lat,lng,kind,first_date,last_date,event_type,lead_source,lead_outcome,claim,where_found,notes", "jn_number");
+    }catch(e){ dbError(e, "load the customer list"); customers = []; }
+    custById = {}; customers.forEach(c => { custById[c.jn_number] = c; });
+    drawCustomers();
+  }
+  function custKind(c){ return c.kind === "calendar" ? "cal" : (/sold/i.test(c.stage) ? "sold" : "lead"); }
+  const CUST_SVG = {
+    sold: '<path d="M12 2 1 11h3v10h6v-6h4v6h6V11h3z" fill="#8cc63f" stroke="#131416" stroke-width="1.6" stroke-linejoin="round"/>',
+    lead: '<path d="M12 2 1 11h3v10h6v-6h4v6h6V11h3z" fill="#131416" stroke="#8cc63f" stroke-width="2" stroke-linejoin="round"/>',
+    cal:  '<path d="M12 2 1 11h3v10h6v-6h4v6h6V11h3z" fill="#f2efe6" stroke="#2c2e31" stroke-width="1.6" stroke-linejoin="round"/>'
+  };
+  const custIcons = {};
+  function custIcon(k){
+    if(!custIcons[k]){
+      const s = TOUCH_UI ? 26 : 22;
+      custIcons[k] = L.divIcon({ className:"cust-ico", html:'<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24">' + CUST_SVG[k] + '</svg>', iconSize:[s, s], iconAnchor:[s / 2, s / 2], popupAnchor:[0, -s / 2] });
+    }
+    return custIcons[k];
+  }
+  function drawCustomers(){
+    if(!map) return;
+    if(custLayer) map.removeLayer(custLayer);
+    custLayer = L.layerGroup();
+    customers.forEach(c => {
+      if(c.lat == null || c.lng == null) return;
+      const k = custKind(c);
+      const m = L.marker([c.lat, c.lng], { icon:custIcon(k), zIndexOffset: k === "cal" ? 400 : 500, title:c.name || "" });
+      m.bindPopup(() => custPopupHtml(custById[c.jn_number] || c));
+      m.on("popupopen", ev => {
+        const b = ev.popup.getElement().querySelector(".cust-edit");
+        if(b) b.addEventListener("click", () => { m.closePopup(); openCustEdit(c.jn_number); });
+      });
+      m.addTo(custLayer);
+    });
+    if(showCust) custLayer.addTo(map);
+    paintCustBtn();
+  }
+  function telHref(p){ const d = String(p || "").split("/")[0].replace(/x.*$/i, "").replace(/[^0-9]/g, ""); return d.length >= 10 ? "tel:" + d : ""; }
+  function custRow(label, val){ return val ? '<div><span class="k">' + label + ':</span> ' + val + '</div>' : ''; }
+  function custPopupHtml(c){
+    const k = custKind(c), e = escapeHtml;
+    const phone = c.phone ? (telHref(c.phone) ? '<a href="' + telHref(c.phone) + '">' + e(c.phone) + '</a>' : e(c.phone)) : "";
+    const addr = [c.street, c.city, [c.state, c.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+    let h = '<div class="cust-pop"><span class="tag ' + k + '">' + (k === "cal" ? "CALENDAR · NOT IN JOBNIMBUS" : "MOTHERSHIP CUSTOMER") + '</span><br>' +
+      '<b style="font-family:var(--font-display);font-size:15px">' + e(c.name || "(no name)") + '</b>' +
+      (addr ? '<div class="k" style="margin-bottom:3px">' + e(addr) + '</div>' : '');
+    if(k === "cal"){
+      h += custRow("PM", e(c.assigned_to)) + custRow("Phone", phone) + custRow("Lead source", e(c.lead_source)) +
+        custRow("Lead outcome", e(c.lead_outcome)) + custRow("Claim", e(c.claim)) + custRow("Event", e(c.event_type)) +
+        custRow("On calendar", c.first_date ? fmtDate(c.first_date) + "/" + String(c.first_date).slice(2, 4) + (c.last_date ? " – " + fmtDate(c.last_date) + "/" + String(c.last_date).slice(2, 4) : "") : "");
+    } else {
+      h += custRow("Assigned to", e(c.assigned_to)) + custRow("Phone", phone) + custRow("JobNimbus #", e(c.jn_number)) + custRow("Stage", e(c.stage));
+    }
+    h += custRow("Notes", e(c.notes));
+    if(isManager()) h += '<button type="button" class="cust-edit save-btn dark" style="margin-top:8px;padding:7px;font-size:12px">Edit</button>';
+    return h + '</div>';
+  }
+  function openCustEdit(id){
+    const c = custById[id]; if(!c) return;
+    custEditId = id;
+    const cal = c.kind === "calendar";
+    $("custEditTitle").textContent = cal ? "Edit calendar address" : "Edit customer";
+    $("ceName").value = c.name || ""; $("ceStreet").value = c.street || ""; $("cePhone").value = c.phone || "";
+    $("ceAssigned").value = c.assigned_to || ""; $("ceJn").value = c.jn_number; $("ceStage").value = c.stage || "";
+    $("ceSource").value = c.lead_source || ""; $("ceOutcome").value = c.lead_outcome || ""; $("ceClaim").value = c.claim || "";
+    $("ceNotes").value = c.notes || "";
+    $("ceCustFields").style.display = cal ? "none" : "";
+    $("ceCalFields").style.display = cal ? "" : "none";
+    $("custEditModal").classList.add("open");
+  }
+  $("ceCancelBtn").addEventListener("click", () => { $("custEditModal").classList.remove("open"); custEditId = null; });
+  $("ceSaveBtn").addEventListener("click", async () => {
+    const c = custById[custEditId]; if(!c) return;
+    const cal = c.kind === "calendar";
+    const upd = { name:$("ceName").value.trim(), street:$("ceStreet").value.trim(), phone:$("cePhone").value.trim(),
+      assigned_to:$("ceAssigned").value.trim(), notes:$("ceNotes").value.trim(), updated_at:new Date().toISOString(), updated_by:currentUser };
+    if(cal){ upd.lead_source = $("ceSource").value.trim(); upd.lead_outcome = $("ceOutcome").value.trim(); upd.claim = $("ceClaim").value.trim(); }
+    else { upd.stage = $("ceStage").value.trim(); }
+    $("ceSaveBtn").disabled = true;
+    const { data, error } = await supabaseClient.from("customers").update(upd).eq("jn_number", c.jn_number).select("jn_number");
+    $("ceSaveBtn").disabled = false;
+    if(error || !data || !data.length){ dbError(error || { message:"you don't have permission to edit this record." }, "save the changes"); return; }
+    Object.assign(c, upd);
+    $("custEditModal").classList.remove("open"); custEditId = null;
+    drawCustomers();
+    showToast("Saved.", "success", 2500);
+  });
 
   function hailColor(h){ return h >= 1.25 ? "#9c1f3c" : h >= 1.0 ? "#d9562f" : h >= 0.9 ? "#ef9f4a" : "#d9b23f"; }
   function fmtN(n){ return Number(n || 0).toLocaleString("en-US"); }
