@@ -297,7 +297,10 @@
     width:100%; margin-top:14px; padding:11px; background:var(--brass); color:var(--olive-dark); font-weight:700; border:none;
     font-family:var(--font-display); font-size:14px; letter-spacing:.03em; text-transform:uppercase; cursor:pointer;
   }
-  .save-btn:hover{ background:#9c6f22;}
+  .save-btn:hover{ background:var(--brass-light);}
+  /* Dark (charcoal) variant: light text, lime text on hover */
+  .save-btn.dark{ background:var(--olive); color:var(--paper); }
+  .save-btn.dark:hover{ background:var(--olive-dark); color:var(--brass-light); }
   .save-btn:disabled{ background:#c9c2ac; cursor:not-allowed;}
 
   /* ---------- List/log view ---------- */
@@ -1878,7 +1881,7 @@
     return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
       fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail' + (builtTxt(n) ? '<br>' + builtTxt(n) : '') + '<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
       '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
-      '<br><button type="button" class="nb-zoom save-btn" data-nb="' + escapeHtml(n.id) + '" onclick="window.__nbZoom && window.__nbZoom(this.getAttribute(\'data-nb\'))" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
+      '<br><button type="button" class="nb-zoom save-btn dark" data-nb="' + escapeHtml(n.id) + '" onclick="window.__nbZoom && window.__nbZoom(this.getAttribute(\'data-nb\'))" style="margin-top:8px;padding:7px;font-size:12px">Show streets on the map</button>' +
       '<button class="nb-open save-btn" style="margin-top:6px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
   }
 
