@@ -1661,7 +1661,7 @@
   async function loadDispatch(){
     try{
       const res = await Promise.all([
-        fetchAll("neighborhoods", "id,name,homes,storms,max_hail,center,lat,lng,cities", "id"),
+        fetchAll("neighborhoods", "id,name,homes,storms,max_hail,center,lat,lng,cities,built_from,built_to", "id"),
         fetchAll("streets", "id,neighborhood_id,name,city,zip,homes,max_hail", "id"),
         fetchAll("assignments", "neighborhood_id,status,pm,knockers,notes,updated_at,updated_by", "neighborhood_id"),
         fetchAll("street_assignments", "street_id,knocker", "street_id"),
@@ -1704,11 +1704,16 @@
     drawStreetLines();
   }
 
+  // "Built 1971–1989": years most of the neighborhood's homes went up (10th–90th percentile of county year built).
+  function builtTxt(n){
+    if(!n || !n.built_from) return "";
+    return "Built " + n.built_from + (n.built_to && n.built_to !== n.built_from ? "–" + n.built_to : "");
+  }
   function nbPopupHtml(n){
     const a = assignFor(n.id);
     const ks = a.knockers.map(id => nameFor(id)).join(", ");
     return '<div style="min-width:190px;font-size:13px;line-height:1.45"><b style="font-family:var(--font-display);font-size:15px">' + escapeHtml(n.name) + '</b><br>' +
-      fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
+      fmtN(n.homes) + ' homes · up to ' + Number(n.max_hail).toFixed(2) + '" hail' + (builtTxt(n) ? '<br>' + builtTxt(n) : '') + '<br>Storms: ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") +
       '<br>' + NB_STATUS[a.status] + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') + (ks ? '<br>Knockers: ' + escapeHtml(ks) : '') +
       '<br><button type="button" class="nb-zoom save-btn" data-nb="' + escapeHtml(n.id) + '" onclick="window.__nbZoom && window.__nbZoom(this.getAttribute(\'data-nb\'))" style="margin-top:8px;padding:7px;font-size:12px;background:var(--olive)">Show streets on the map</button>' +
       '<button class="nb-open save-btn" style="margin-top:6px;padding:7px;font-size:12px">' + (isManager() ? 'Open in Dispatch' : 'See streets and homes') + '</button></div>';
@@ -1736,6 +1741,7 @@
       '<div class="le-meta">' + escapeHtml((n.cities || []).join(" · ")) + (n.center ? ' · drive to ' + escapeHtml(n.center) : '') + '</div>' +
       '<div class="stats-cards mini"><div class="stat-card"><div class="num">' + fmtN(n.homes) + '</div><div class="lbl">Homes on list</div></div>' +
       '<div class="stat-card"><div class="num">' + Number(n.max_hail).toFixed(2) + '"</div><div class="lbl">Biggest hail · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + '</div></div>' +
+      (n.built_from ? '<div class="stat-card"><div class="num">' + n.built_from + '</div><div class="lbl">Construction started · ' + escapeHtml(builtTxt(n)) + '</div></div>' : '') +
       '<div class="stat-card"><div class="num">' + near.doors + '</div><div class="lbl">Doors knocked within 3 mi</div></div>' +
       '<div class="stat-card highlight"><div class="num">' + near.appts + '</div><div class="lbl">Appointments nearby</div></div></div>';
     if(editable){
@@ -1840,7 +1846,7 @@
       const a = assignFor(n.id);
       const ks = uniq(a.knockers.concat((streetsByNb[n.id] || []).map(s => streetAssign[s.id]).filter(Boolean))).map(id => nameFor(id));
       return '<button class="nb-card' + (dispatchSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
-        fmtN(n.homes) + ' homes · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + ' · up to ' + Number(n.max_hail).toFixed(2) + '"</span>' +
+        fmtN(n.homes) + ' homes · ' + (n.storms || []).map(s => shortDate(s.date)).join(", ") + ' · up to ' + Number(n.max_hail).toFixed(2) + '"' + (builtTxt(n) ? ' · ' + builtTxt(n) : '') + '</span>' +
         (ks.length ? '<span class="nb-chips">' + ks.map(k => '<span class="chip">' + escapeHtml(k) + '</span>').join("") + '</span>' : '') + '</span>' +
         '<span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span>' + (a.pm ? '<span class="le-meta">PM ' + escapeHtml(a.pm) + '</span>' : '') + '</span></button>';
     }).join("") : '<div class="empty-state">No neighborhoods match.</div>') + '</div><div class="nb-detail" id="nbDetail">' +
@@ -1921,7 +1927,7 @@
     h += myNbs.map(n => {
       const a = assignFor(n.id), mine = (streetsByNb[n.id] || []).filter(s => streetAssign[s.id] === me.id);
       return '<button class="nb-card' + (mineSel === n.id ? ' sel' : '') + '" data-id="' + n.id + '"><span class="nb-bar" style="background:' + hailColor(+n.max_hail) + '"></span><span class="nb-main"><b>' + escapeHtml(n.name) + '</b><span class="le-meta">' +
-        (a.knockers.indexOf(me.id) >= 0 ? 'Whole neighborhood' : mine.length + ' street' + (mine.length === 1 ? '' : 's') + ': ' + mine.map(s => escapeHtml(s.name)).join(", ")) + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') +
+        (builtTxt(n) ? builtTxt(n) + ' · ' : '') + (a.knockers.indexOf(me.id) >= 0 ? 'Whole neighborhood' : mine.length + ' street' + (mine.length === 1 ? '' : 's') + ': ' + mine.map(s => escapeHtml(s.name)).join(", ")) + (a.pm ? ' · PM ' + escapeHtml(a.pm) : '') +
         '</span></span><span class="nb-right"><span class="status-pill" style="background:' + NB_STATUS_COLOR[a.status] + '">' + NB_STATUS[a.status] + '</span></span></button>';
     }).join("");
     if(mineSel && nbById[mineSel]) h += '<div class="nb-detail mine-detail" id="mineDetail">' + nbDetailHtml(nbById[mineSel], false) + '</div>';
