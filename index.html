@@ -349,6 +349,14 @@
   .team-card{ background:#fff; border:1px solid var(--line); padding:20px; margin-bottom:16px;}
   .team-card h3{ font-family:var(--font-display); font-size:16px; margin:0 0 12px;}
   .member-row{ display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--paper-dim); font-size:14px;}
+  .add-mate{ display:grid; gap:8px; }
+  .add-mate .save-btn{ margin-top:2px; }
+  .mate-result{ margin-top:12px; padding:12px 14px; background:var(--paper-dim); border-left:4px solid var(--brass); font-size:14px; line-height:1.5; }
+  .mate-result .creds{ font-family:var(--font-mono); font-size:15px; margin:6px 0 10px; }
+  .mate-result .creds b{ user-select:all; }
+  .mate-result .row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .mate-result .row a, .mate-result .row button{ font-family:var(--font-mono); font-size:12px; padding:9px 12px; border:1px solid var(--line); background:var(--paper); color:var(--ink); text-decoration:none; cursor:pointer; }
+  .member-row .resetBtn{ color:var(--olive) !important; }
   .member-row button{ background:none; border:none; color:var(--status-notinterested); cursor:pointer; font-family:var(--font-mono); font-size:11px;}
   .add-row{ display:flex; gap:8px; margin-top:12px;}
   .add-row input{ flex:1; }
@@ -607,6 +615,16 @@
     <div id="dispatchView"></div>
 
     <div id="teamView">
+      <div class="team-card" id="addMateCard" style="display:none">
+        <h3>Add a teammate</h3>
+        <div class="add-mate">
+          <input type="text" id="mateName" placeholder="Full name" autocomplete="off">
+          <input type="email" id="mateEmail" placeholder="Email (this is their username)" autocomplete="off" autocapitalize="off">
+          <select id="mateRole"><option value="knocker">Knocker</option><option value="pm">Project manager</option><option value="dispatch">Dispatch</option><option value="admin">Admin</option></select>
+          <button class="save-btn" id="mateAddBtn" type="button">Add and get password</button>
+        </div>
+        <div id="mateResult" class="mate-result" style="display:none"></div>
+      </div>
       <div class="team-card">
         <h3>Team members</h3>
         <div id="memberList"></div>
@@ -1642,6 +1660,48 @@
 
   // ---------- Team view ----------
   const ROLE_LABEL = { admin:"Admin", dispatch:"Dispatch", pm:"Project manager", knocker:"Knocker" };
+  const APP_URL = "https://mothership-canvass.netlify.app";
+  async function teamAdmin(payload){
+    try{
+      const { data, error } = await supabaseClient.functions.invoke("team-admin", { body: payload });
+      if(error){
+        let msg = error.message;
+        try{ const j = await error.context.json(); if(j && j.error) msg = j.error; }catch(e){}
+        showToast(msg, "error", 7000); return null;
+      }
+      if(data && data.error){ showToast(data.error, "error", 7000); return null; }
+      return data;
+    }catch(e){ showToast("Couldn't reach the team helper: " + e.message, "error", 7000); return null; }
+  }
+  function showMateResult(r, lead){
+    const first = (r.full_name || "").split(" ")[0] || "there";
+    const msg = "Hi " + first + ", here's your Mothership Canvass login.\nSign in at " + APP_URL + "\nUsername: " + r.email + "\nPassword: " + r.password + "\nIt will ask you to pick your own password after you sign in.";
+    const box = $("mateResult");
+    box.innerHTML = '<div>' + escapeHtml(lead + (r.full_name || r.email)) + ':</div>' +
+      '<div class="creds">Username: <b>' + escapeHtml(r.email) + '</b><br>Password: <b>' + escapeHtml(r.password) + '</b></div>' +
+      '<div class="row"><button type="button" id="mateCopy">Copy message</button>' +
+      '<a href="sms:?&body=' + encodeURIComponent(msg) + '">Text it</a>' +
+      '<a href="mailto:' + encodeURIComponent(r.email) + '?subject=' + encodeURIComponent("Your Mothership Canvass login") + '&body=' + encodeURIComponent(msg) + '">Email it</a></div>' +
+      '<div class="le-meta" style="margin-top:8px">This password is only shown now. Lost it? Use Reset password on their row.</div>';
+    box.style.display = "";
+    $("addMateCard").scrollIntoView({ behavior:"smooth", block:"start" });
+    $("mateCopy").addEventListener("click", async () => {
+      try{ await navigator.clipboard.writeText(msg); showToast("Copied. Paste it into a text.", "success", 2500); }
+      catch(e){ showToast("Couldn't copy. Press and hold the password to copy it.", "error", 4000); }
+    });
+  }
+  $("mateAddBtn").addEventListener("click", async () => {
+    const full_name = $("mateName").value.trim(), email = $("mateEmail").value.trim().toLowerCase(), role = $("mateRole").value;
+    if(!full_name || !email){ showToast("Enter their name and email.", "error", 3500); return; }
+    $("mateAddBtn").disabled = true; $("mateAddBtn").textContent = "Adding…";
+    const res = await teamAdmin({ action:"create", full_name, email, role });
+    $("mateAddBtn").disabled = false; $("mateAddBtn").textContent = "Add and get password";
+    if(!res) return;
+    $("mateName").value = ""; $("mateEmail").value = ""; $("mateRole").value = "knocker";
+    try{ await loadProfiles(); }catch(e){}
+    renderTeam();
+    showMateResult(res, res.existed ? "Login reset for " : "Login ready for ");
+  });
   function renderTeam(){
     const list = Object.values(profiles).sort((a,b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
     const admin = !!me && me.role === "admin";
@@ -1652,14 +1712,26 @@
       if(admin && p.id !== me.id){
         html += '<span style="display:flex;gap:8px;align-items:center;flex-shrink:0;"><select data-id="' + p.id + '" class="roleSel" style="width:auto;padding:6px;">' +
           Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"' + (p.role === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
-          '</select><button data-id="' + p.id + '" class="activeBtn">' + (p.active ? 'Turn off' : 'Turn on') + '</button></span>';
+          '</select><button data-id="' + p.id + '" class="resetBtn">Reset password</button><button data-id="' + p.id + '" class="activeBtn">' + (p.active ? 'Turn off' : 'Turn on') + '</button></span>';
       }
       return html + '</div>';
     }).join('') || '<div class="empty-state" style="padding:20px 0;">No team members yet.</div>';
     $("teamHelp").textContent = admin
-      ? "To add someone: in Supabase, add them to the roster table (email, name, role), then go to Authentication → Users → Add user → Create new user, enter their email and the temporary password, and tick Auto Confirm User. They pick their own password the first time they sign in. Turning someone off locks them out right away; their visits stay."
+      ? "Add someone with the form above, then text them the username and password it shows. They pick their own password the first time they sign in. Forgot it? Tap Reset password on their row. Turning someone off locks them out right away; their visits stay."
       : "";
+    $("addMateCard").style.display = admin ? "" : "none";
     if(!admin) return;
+    document.querySelectorAll(".resetBtn").forEach(btn => btn.addEventListener("click", async () => {
+      const p = profiles[btn.dataset.id];
+      $("confirmYesBtn").textContent = "Reset";
+      const ok = await showConfirm("Give " + (p.full_name || p.email) + " a new temporary password? Their old one stops working.");
+      $("confirmYesBtn").textContent = "Delete";
+      if(!ok) return;
+      btn.disabled = true;
+      const res = await teamAdmin({ action:"reset", user_id:p.id });
+      btn.disabled = false;
+      if(res){ p.must_change_password = true; renderTeam(); showMateResult(res, "New password for "); }
+    }));
     document.querySelectorAll(".roleSel").forEach(sel => sel.addEventListener("change", async () => {
       const r = await supabaseClient.from("profiles").update({ role: sel.value }).eq("id", sel.dataset.id).select("id");
       if(r.error) dbError(r.error, "change the role");
