@@ -180,6 +180,12 @@
   #areasBtn.off{ background:var(--paper); color:var(--ink); border-color:var(--line); }
   #areasBtn.off .sw{ background:#c9c3b3; }
   #areasBtn.off .sw::after{ left:2px; }
+  /* On computers the switch lives in the top header, next to the user name. */
+  header #areasBtn{ position:static; min-height:0; padding:5px 12px 5px 8px; border-radius:16px; box-shadow:none;
+    background:var(--brass); border:1px solid var(--brass); color:var(--olive-dark); font-size:11.5px; letter-spacing:.03em; }
+  header #areasBtn .sw{ background:rgba(28,37,33,.35); }
+  header #areasBtn.off{ background:transparent; color:var(--paper); border-color:rgba(242,239,230,.45); }
+  header #areasBtn.off .sw{ background:rgba(242,239,230,.3); }
   #locateBtn.tracking{ background:var(--navy); color:#fff; border-color:var(--navy); }
 
   .user-dot-outer{
@@ -1637,6 +1643,18 @@
     showToast(on ? "Hail area circles are showing." : "Hail area circles hidden. Tap \"Hail areas\" to bring them back.", "info", 3500);
   }
   document.addEventListener("DOMContentLoaded", paintAreasBtn);
+  // Computers: put the switch in the header; phones: keep it floating on the map above the locate button.
+  (function placeAreasBtn(){
+    const mq = window.matchMedia("(min-width: 721px)");
+    const place = () => {
+      const b = $("areasBtn"), who = document.querySelector("header .who"), mapView = $("mapView");
+      if(!b || !who || !mapView) return;
+      if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); }
+      else if(b.parentNode !== mapView){ const loc = $("locateBtn"); mapView.insertBefore(b, loc ? loc.nextSibling : null); }
+    };
+    place();
+    if(mq.addEventListener) mq.addEventListener("change", place); else if(mq.addListener) mq.addListener(place);
+  })();
   document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest("#areasBtn")){ ev.stopPropagation(); setShowAreas(!showAreas); } }, true);
   let nbFilter = { q:"", status:"", knocker:"" };
 
