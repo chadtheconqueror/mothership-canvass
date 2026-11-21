@@ -157,7 +157,7 @@
     font-family:var(--font-mono); font-size:13.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink); cursor:pointer; text-align:left; }
   #mobileMenu .mm-item.active{ border-left-color:var(--brass); background:var(--paper-dim); font-weight:700; }
   #menuAreasSlot{ border-top:1px solid var(--line); margin-top:4px; padding:10px 6px 6px; }
-  #menuAreasSlot #areasBtn, #menuAreasSlot #custBtn{ position:static; width:100%; justify-content:flex-start; min-height:46px; box-shadow:none; }
+  #menuAreasSlot #areasBtn, #menuAreasSlot #custBtn, #menuAreasSlot #swathBtn{ position:static; width:100%; justify-content:flex-start; min-height:46px; box-shadow:none; }
   #menuWho{ font-family:var(--font-mono); font-size:11px; color:#8a8371; padding:8px 14px 2px; border-top:1px solid var(--line); margin-top:6px; }
   #mobileMenu .mm-signout{ color:#a3402e; }
 
@@ -194,23 +194,23 @@
     display:flex; align-items:center; justify-content:center; font-size:18px; cursor:pointer;
   }
   #locateBtn:active{ background:var(--paper-dim); }
-  #areasBtn, #custBtn{
+  #areasBtn, #custBtn, #swathBtn{
     position:absolute; bottom:70px; right:12px; z-index:1002; min-height:44px; padding:0 14px;
     border-radius:22px; background:var(--olive-dark); color:var(--paper); border:1.5px solid var(--olive-dark);
     box-shadow:0 4px 14px rgba(0,0,0,.25); font-family:var(--font-mono); font-size:12.5px; font-weight:700;
     display:flex; align-items:center; gap:7px; cursor:pointer; white-space:nowrap;
   }
-  #areasBtn .sw, #custBtn .sw{ width:30px; height:16px; border-radius:8px; background:rgba(255,255,255,.35); position:relative; flex-shrink:0; }
-  #areasBtn .sw::after, #custBtn .sw::after{ content:""; position:absolute; top:2px; left:16px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .15s; }
-  #areasBtn.off, #custBtn.off{ background:var(--paper); color:var(--ink); border-color:var(--line); }
-  #areasBtn.off .sw, #custBtn.off .sw{ background:#c9c3b3; }
-  #areasBtn.off .sw::after, #custBtn.off .sw::after{ left:2px; }
+  #areasBtn .sw, #custBtn .sw, #swathBtn .sw{ width:30px; height:16px; border-radius:8px; background:rgba(255,255,255,.35); position:relative; flex-shrink:0; }
+  #areasBtn .sw::after, #custBtn .sw::after, #swathBtn .sw::after{ content:""; position:absolute; top:2px; left:16px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .15s; }
+  #areasBtn.off, #custBtn.off, #swathBtn.off{ background:var(--paper); color:var(--ink); border-color:var(--line); }
+  #areasBtn.off .sw, #custBtn.off .sw, #swathBtn.off .sw{ background:#c9c3b3; }
+  #areasBtn.off .sw::after, #custBtn.off .sw::after, #swathBtn.off .sw::after{ left:2px; }
   /* On computers the switch lives in the top header, next to the user name. */
-  header #areasBtn, header #custBtn{ position:static; min-height:0; padding:5px 12px 5px 8px; border-radius:16px; box-shadow:none;
+  header #areasBtn, header #custBtn, header #swathBtn{ position:static; min-height:0; padding:5px 12px 5px 8px; border-radius:16px; box-shadow:none;
     background:var(--brass); border:1px solid var(--brass); color:var(--olive-dark); font-size:11.5px; letter-spacing:.03em; }
-  header #areasBtn .sw, header #custBtn .sw{ background:rgba(19,20,22,.35); }
-  header #areasBtn.off, header #custBtn.off{ background:transparent; color:var(--paper); border-color:rgba(242,239,230,.45); }
-  header #areasBtn.off .sw, header #custBtn.off .sw{ background:rgba(242,239,230,.3); }
+  header #areasBtn .sw, header #custBtn .sw, header #swathBtn .sw{ background:rgba(19,20,22,.35); }
+  header #areasBtn.off, header #custBtn.off, header #swathBtn.off{ background:transparent; color:var(--paper); border-color:rgba(242,239,230,.45); }
+  header #areasBtn.off .sw, header #custBtn.off .sw, header #swathBtn.off .sw{ background:rgba(242,239,230,.3); }
   #locateBtn.tracking{ background:var(--navy); color:#fff; border-color:var(--navy); }
 
   .user-dot-outer{
@@ -376,7 +376,7 @@
   /* Customer / calendar house markers */
   .cust-ico{ background:none; border:none; }
   .cust-ico svg{ display:block; filter:drop-shadow(0 1px 2px rgba(0,0,0,.55)); }
-  #menuAreasSlot #custBtn{ margin-top:8px; }
+  #menuAreasSlot #custBtn, #menuAreasSlot #swathBtn{ margin-top:8px; }
   .cust-pop{ min-width:200px; font-size:13px; line-height:1.5; }
   .cust-pop .tag{ display:inline-block; font-family:var(--font-mono); font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:10px; margin-bottom:5px; }
   .cust-pop .tag.sold{ background:#8cc63f; color:#131416; }
@@ -606,6 +606,7 @@
       <button id="locateBtn" title="Find my location">📍</button>
       <button id="areasBtn" type="button" title="Show or hide the hail neighborhood circles" aria-pressed="true"><span class="sw"></span><span id="areasBtnTxt">Hail areas: ON</span></button>
       <button id="custBtn" type="button" title="Show or hide customer and calendar houses" aria-pressed="true"><span class="sw"></span><span id="custBtnTxt">Customers: ON</span></button>
+      <button id="swathBtn" type="button" title="Show or hide the hail map (hail size by storm day, 0.75 in and up)" aria-pressed="true"><span class="sw"></span><span id="swathBtnTxt">Hail map: ON</span></button>
       <div id="sidePanel"></div>
     </div>
 
@@ -910,6 +911,7 @@
     redrawAllMarkers();
     await loadDispatch();
     loadCustomers();
+    loadSwaths().then(hookSwathHover);
     showDispatchTab();
     document.querySelector('.tab-btn[data-tab="map"]').click();
   }
@@ -1834,8 +1836,8 @@
       const b = $("areasBtn"), who = document.querySelector("header .who"), mapView = $("mapView");
       if(!b || !who || !mapView) return;
       const c = $("custBtn");
-      if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); if(c && c.parentNode !== who) who.insertBefore(c, b.nextSibling); }
-      else { const slot = $("menuAreasSlot"); if(slot && b.parentNode !== slot) slot.appendChild(b); if(slot && c && c.parentNode !== slot) slot.appendChild(c); }
+      if(mq.matches){ if(b.parentNode !== who) who.insertBefore(b, who.firstChild); if(c && c.parentNode !== who) who.insertBefore(c, b.nextSibling); const w = $("swathBtn"); if(w && c && w.parentNode !== who) who.insertBefore(w, c.nextSibling); }
+      else { const slot = $("menuAreasSlot"); if(slot && b.parentNode !== slot) slot.appendChild(b); if(slot && c && c.parentNode !== slot) slot.appendChild(c); const w = $("swathBtn"); if(slot && w && w.parentNode !== slot) slot.appendChild(w); }
     };
     place();
     if(mq.addEventListener) mq.addEventListener("change", place); else if(mq.addListener) mq.addListener(place);
@@ -1843,6 +1845,70 @@
   document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest("#areasBtn")){ ev.stopPropagation(); setShowAreas(!showAreas); } }, true);
   let nbFilter = { q:"", status:"", knocker:"" };
 
+
+  // ---------- Hail map overlay: 1 km cells of hail size per storm day (our storm data) ----------
+  let swathCells = {}, swathLayer = null, swathTip = null, showSwath = true;
+  try{ showSwath = localStorage.getItem("canvassShowSwath") !== "0"; }catch(e){}
+  function paintSwathBtn(){
+    const b = $("swathBtn"); if(!b) return;
+    b.classList.toggle("off", !showSwath);
+    b.setAttribute("aria-pressed", showSwath ? "true" : "false");
+    $("swathBtnTxt").textContent = "Hail map: " + (showSwath ? "ON" : "OFF");
+  }
+  function setShowSwath(on){
+    showSwath = on;
+    try{ localStorage.setItem("canvassShowSwath", on ? "1" : "0"); }catch(e){}
+    if(map && swathLayer){ if(on) swathLayer.addTo(map); else { map.removeLayer(swathLayer); if(swathTip) map.closeTooltip(swathTip); } }
+    paintSwathBtn();
+  }
+  document.addEventListener("DOMContentLoaded", paintSwathBtn);
+  document.addEventListener("click", ev => { if(ev.target.closest && ev.target.closest("#swathBtn")){ ev.stopPropagation(); setShowSwath(!showSwath); } }, true);
+  function swathColor(h){ return h >= 1.5 ? "#7a0019" : h >= 1.25 ? "#c81e1e" : h >= 1.0 ? "#ee7a22" : "#f2c230"; }
+  function swathKey(lat, lng){ return Math.floor(lat * 100) + ":" + Math.floor(lng * 100); }
+  async function loadSwaths(){
+    let rows = [];
+    try{ rows = await fetchAll("hail_cells", "id,lat,lng,hail,storm_date", "id"); }
+    catch(e){ dbError(e, "load the hail map"); return; }
+    swathCells = {};
+    rows.forEach(r => {
+      const k = swathKey(r.lat, r.lng);
+      const c = swathCells[k] || (swathCells[k] = { lat:r.lat, lng:r.lng, max:0, days:[] });
+      c.max = Math.max(c.max, +r.hail); c.days.push([r.storm_date, +r.hail]);
+    });
+    Object.values(swathCells).forEach(c => c.days.sort((a, b) => b[0].localeCompare(a[0])));
+    drawSwaths();
+  }
+  function drawSwaths(){
+    if(!map) return;
+    if(swathLayer) map.removeLayer(swathLayer);
+    if(!map.getPane("swathPane")){ const pn = map.createPane("swathPane"); pn.style.zIndex = 350; pn.style.pointerEvents = "none"; }
+    const rend = L.canvas({ pane:"swathPane" });
+    swathLayer = L.layerGroup();
+    Object.values(swathCells).forEach(c => {
+      const col = swathColor(c.max);
+      L.rectangle([[c.lat - 0.005, c.lng - 0.005], [c.lat + 0.005, c.lng + 0.005]],
+        { renderer:rend, pane:"swathPane", stroke:false, fillColor:col, fillOpacity:0.38, interactive:false }).addTo(swathLayer);
+    });
+    if(showSwath) swathLayer.addTo(map);
+    paintSwathBtn();
+  }
+  function swathTipHtml(c){
+    return '<b>Up to ' + c.max.toFixed(2) + '" hail</b><br>' + c.days.map(d => { const p = d[0].split("-"); return (+p[1]) + "/" + (+p[2]) + "/" + p[0].slice(2) + " · " + d[1].toFixed(2) + '"'; }).join("<br>");
+  }
+  // Computers: hovering a hail cell shows its sizes and storm dates (phones keep taps for logging houses).
+  function hookSwathHover(){
+    if(TOUCH_UI || !map || map.__swathHover) return;
+    map.__swathHover = true;
+    map.on("mousemove", ev => {
+      if(!showSwath || !swathLayer) return;
+      const c = swathCells[swathKey(ev.latlng.lat, ev.latlng.lng)];
+      if(!c){ if(swathTip){ map.closeTooltip(swathTip); swathTip = null; } return; }
+      if(!swathTip) swathTip = L.tooltip({ direction:"top", offset:[0, -8], opacity:0.95 });
+      swathTip.setLatLng(ev.latlng).setContent(swathTipHtml(c));
+      if(!map.hasLayer(swathTip)) swathTip.addTo(map);
+    });
+    map.on("mouseout", () => { if(swathTip){ map.closeTooltip(swathTip); swathTip = null; } });
+  }
 
   // ---------- Customers (JobNimbus) and calendar-only addresses: static house markers ----------
   let customers = [], custLayer = null, custById = {}, custEditId = null;
